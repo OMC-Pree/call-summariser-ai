@@ -1,0 +1,7 @@
+gradio==4.44.0
+plotly==5.23.0
+pandas==2.2.2
+numpy==1.26.4
+python-dotenv==1.0.1
+PyAthena==3.9.0
+SQLAlchemy==2.0.32

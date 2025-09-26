@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Meeting Summariser - Async Agentic Flow
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Architectures:
+      - arm64
+    Tracing: Active
+    Environment:
+      Variables:
+        # S3 layout + versions (Athena partitioned)
+        S3_PREFIX: "summaries"
+        SUMMARY_SCHEMA_VERSION: "1.2"
+        ATHENA_PARTITIONED: "true"
+        MODEL_VERSION: "bedrock:claude-3-sonnet-20240229"
+        PROMPT_VERSION: "2025-09-22-a"
+        INSIGHTS_VERSION: "2025-08-30-a"
+        CASE_CHECK_SCHEMA_VERSION: "1.0"
+        SAVE_TRANSCRIPTS: "true"
+        # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
+        A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
+        A2I_PORTAL_URL: ""
+
+Resources:
+  ### Shared Dependencies Layer ###
+  SharedDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: shared-python-libs
+      Description: Common Python packages (pydantic, boto3, etc.)
+      ContentUri: layers/shared-python
+      CompatibleRuntimes:
+        - python3.11
+    Metadata:
+      BuildMethod: python3.11
+
+  SummaryJobsDLQ:
+    Type: AWS::SQS::Queue
+
+  ### S3 Bucket for Summaries ###
+  SummaryBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: "DeleteOldSummaries"
+            Prefix: "summaries/"
+            Status: Enabled
+            ExpirationInDays: 90
+          - Id: "DeleteOldAthenaResults" # <-- NEW
+            Prefix: "athena-results/"
+            Status: Enabled
+            ExpirationInDays: 30
+
+  ### DynamoDB Table for Job Status ###
+  SummaryJobTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: summary-job-status
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: meetingId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: meetingId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  ### DynamoDB Table for Summary Metadata Index ###
+  SummaryMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: summary-metadata-index
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: meetingId
+          AttributeType: S
+        - AttributeName: versionTimestamp
+          AttributeType: S
+        - AttributeName: version
+          AttributeType: S
+      KeySchema:
+        - AttributeName: meetingId
+          KeyType: HASH
+        - AttributeName: versionTimestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: VersionIndex
+          KeySchema:
+            - AttributeName: version
+              KeyType: HASH
+            - AttributeName: versionTimestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  ### SQS Queue ###
+  SummaryJobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 330 # > Lambda timeout (300s)
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SummaryJobsDLQ.Arn
+        maxReceiveCount: 5
+
+  ### Initiate Lambda (API Gateway Trigger) ###
+  InitiateSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: initiate_summary.app.lambda_handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /summarise
+            Method: post
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOBS_QUEUE: !Ref SummaryJobsQueue
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt SummaryJobsQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryJobTable
+
+  ### Process Lambda (Triggered by SQS) ###
+  ProcessSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 300
+      MemorySize: 1024
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: process_summary.app.lambda_handler
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SummaryJobsQueue.Arn
+            BatchSize: 1
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+          ZOOM_PARAM_PREFIX: /zoom/s2s
+      Policies:
+        # Limit S3 to the summaries bucket (Get/Put covered here)
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryJobTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+            - Effect: Allow
+              Action:
+                - comprehend:DetectPiiEntities
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:PutParameter
+              Resource:
+                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/zoom/s2s/*
+            - Effect: Allow
+              Action:
+                - sagemaker:StartHumanLoop
+                - sagemaker:DescribeHumanLoop
+              Resource: "*" # can be narrowed to your flow later
+
+  ### Get Summary URL Lambda (returns signed URL for summary) ###
+  GetSummaryUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: get_summary_url.app.lambda_handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /status
+            Method: get
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummaryJobTable
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+
+  ListSummariesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: list_summaries.app.lambda_handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /summaries
+            Method: get
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummaryJobTable
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+
+  GetCaseUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: get_case_url.app.lambda_handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /case
+            Method: get
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummaryJobTable
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+
+  ### A2I Review Poller (flip IN_REVIEW -> COMPLETED)
+  ReviewPollerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: review_poller.app.lambda_handler # you add this small file
+      Timeout: 60
+      MemorySize: 512
+      Events:
+        Every5Minutes:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryJobTable
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sagemaker:DescribeHumanLoop
+              Resource: "*"
+
+  # GradioDashboardFunction:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     Environment:
+  #       Variables:
+  #         PORT: "8080"
+  #         AWS_LWA_PORT: "8080"
+  #         AWS_LWA_READINESS_CHECK_PORT: "8080"
+  #         AWS_LWA_READINESS_CHECK_PATH: /
+  #         ATHENA_REGION: !Ref AWS::Region
+  #         ATHENA_WORKGROUP: primary
+  #         ATHENA_S3_STAGING: !Sub "s3://${SummaryBucket}/athena-results/"
+  #         ATHENA_DATABASE: call_summaries
+  #         GRADIO_ROOT_PATH: /ui
+  #     PackageType: Image
+  #     Timeout: 30
+  #     MemorySize: 1024
+  #     AutoPublishAlias: live
+  #     ProvisionedConcurrencyConfig:
+  #       ProvisionedConcurrentExecutions: 1
+  #     EphemeralStorage:
+  #       Size: 1024
+  #     # 👇 Use FunctionUrlConfig instead of Events:FunctionUrl
+  #     FunctionUrlConfig:
+  #       AuthType: NONE
+  #       Cors:
+  #         AllowMethods: ["GET", "POST", "HEAD"]
+  #         AllowOrigins: ["*"]
+  #         AllowHeaders: ["*"]
+  #         MaxAge: 86400
+  #     Policies:
+  #       - Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - athena:StartQueryExecution
+  #               - athena:GetQueryExecution
+  #               - athena:GetQueryResults
+  #               - athena:ListWorkGroups
+  #               - athena:GetWorkGroup
+  #             Resource: "*"
+  #       - Statement:
+  #           - Effect: Allow
+  #             Action:
+  #               - glue:GetDatabase
+  #               - glue:GetDatabases
+  #               - glue:GetTable
+  #               - glue:GetTables
+  #               - glue:SearchTables
+  #             Resource: "*"
+  #       - Statement:
+  #           - Effect: Allow
+  #             Action: ["s3:ListBucket"]
+  #             Resource: !GetAtt SummaryBucket.Arn
+  #       - Statement:
+  #           - Effect: Allow
+  #             Action: ["s3:GetObject", "s3:PutObject"]
+  #             Resource: !Sub "${SummaryBucket.Arn}/athena-results/*"
+
+  #   Metadata:
+  #     Dockerfile: fe/Dockerfile
+  #     DockerContext: .
+  #     DockerTag: gradio-fe
+Outputs:
+  ApiUrl:
+    Description: "POST endpoint to start a new summary job"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/summarise"
+  # DashboardUrl:
+  #   # SAM creates an implicit AWS::Lambda::Url named <FunctionLogicalId>Url
+  #   Value: !GetAtt GradioDashboardFunctionUrl.FunctionUrl
+  #   Description: Public URL for the Gradio dashboard
