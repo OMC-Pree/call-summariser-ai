@@ -148,13 +148,8 @@ def fetch_summaries_json(version: str | None = None) -> dict:
                 return {"error": "Failed to fetch summaries", "status": r.status_code, "body": r.text}
             return r.json()
 
-        # Extract version number from various formats
-        schema_version = "1.2"  # default
-        if version:
-            if "1.1" in version:
-                schema_version = "1.1"
-            elif "1.2" in version:
-                schema_version = "1.2"
+        # Only support schema version 1.2
+        schema_version = "1.2"
 
         # Query Athena directly for the data (updated for new Parquet structure)
         sql = f"""
@@ -229,19 +224,17 @@ def fetch_summaries_from_athena(version: str) -> dict:
             CAST(CASE WHEN case_pass_rate IS NOT NULL THEN true ELSE false END AS BOOLEAN) as caseCheckEnabled,
             CAST(NULL AS VARCHAR) as s3Key
         FROM {ATHENA_DATABASE}.summaries
-        WHERE schema_version = '{_ver(version)}'
+        WHERE schema_version = '1.2'
         LIMIT 1000
         """
 
         df = run_df(sql)
-        print(f"DEBUG: Retrieved {len(df)} rows from Athena for version {_ver(version)}")
 
         # Get employer data from DynamoDB to supplement Athena data
         import boto3
         dynamodb = boto3.resource('dynamodb')
         table = dynamodb.Table('summary-job-status')
 
-        print("DEBUG: Fetching employer data from DynamoDB...")
         employer_data = {}
         try:
             response = table.scan()
@@ -258,9 +251,8 @@ def fetch_summaries_from_athena(version: str) -> dict:
                 if meeting_id and employer_name:
                     employer_data[meeting_id] = employer_name
 
-            print(f"DEBUG: Found employer data for {len(employer_data)} meetings")
         except Exception as e:
-            print(f"DEBUG: Error fetching employer data: {e}")
+            pass
 
         # Convert DataFrame to the format expected by the dashboard
         items = []
@@ -451,31 +443,48 @@ def _simple_kpis():
 
 def _is_escalation_candidate(item):
     """Check if an item is an escalation candidate based on various factors"""
+    meeting_id = item.get("meetingId", "UNKNOWN")
+    escalated = False
+    reason = None
+
     # Check if explicitly marked as escalation candidate
     if item.get("is_escalation_candidate"):
-        return True
+        escalated = True
+        reason = f"Explicitly marked: {item.get('is_escalation_candidate')}"
 
     # Check negative sentiment
-    if (item.get("sentiment") or "").lower() == "negative":
-        return True
+    if not escalated:
+        sentiment = (item.get("sentiment") or "").lower()
+        if sentiment == "negative":
+            escalated = True
+            reason = f"Negative sentiment: '{sentiment}'"
 
     # Check low case pass rate (if available)
-    pass_rate = item.get("casePassRate")
-    if pass_rate is not None and float(pass_rate) < 0.5:
-        return True
+    if not escalated:
+        pass_rate = item.get("casePassRate")
+        if pass_rate is not None and float(pass_rate) < 0.5:
+            escalated = True
+            reason = f"Low pass rate: {pass_rate} < 0.5"
 
     # Check high case failure count
-    fail_count = item.get("caseFailedCount")
-    if fail_count is not None and int(fail_count) >= 3:
-        return True
+    if not escalated:
+        fail_count = item.get("caseFailedCount")
+        if fail_count is not None and int(fail_count) >= 3:
+            escalated = True
+            reason = f"High failure count: {fail_count} >= 3"
 
-    return False
+    # Debug logging for escalated meetings
+    if escalated:
+        print(f"ESCALATION: Meeting {meeting_id} flagged - {reason}")
+        print(f"  Full data: sentiment='{item.get('sentiment')}', casePassRate={item.get('casePassRate')}, caseFailedCount={item.get('caseFailedCount')}, is_escalation_candidate={item.get('is_escalation_candidate')}")
 
-def load_themes_from_api(version=None):
+    return escalated
+
+def load_themes_from_api():
     """Extract themes from Athena data for the specified version"""
     try:
         # Use the _ver helper to convert version formats like "summaries/v=1.2" to "1.2"
-        schema_version = _ver(version)
+        schema_version = "1.2"
 
         # Query Athena directly to avoid pandas/PyAthena compatibility issues
         import boto3
@@ -519,7 +528,6 @@ def load_themes_from_api(version=None):
         # Convert to DataFrame manually
         if len(rows) <= 1:
             df = pd.DataFrame()
-            print(f"DEBUG: No rows returned from Athena query for v{schema_version}")
         else:
             columns = [col['VarCharValue'] for col in rows[0]['Data']]
             data = []
@@ -529,10 +537,7 @@ def load_themes_from_api(version=None):
                     row_data.append(cell.get('VarCharValue', ''))
                 data.append(row_data)
             df = pd.DataFrame(data, columns=columns)
-            print(f"DEBUG: Created DataFrame with {len(df)} rows for v{schema_version}")
-
         if df.empty:
-            print(f"DEBUG: DataFrame is empty for v{schema_version}")
             return px.bar(title=f"No theme data found for version {schema_version}")
 
         theme_counts = {}
@@ -653,9 +658,9 @@ def _create_empty_pie_chart(title: str):
     empty_df = pd.DataFrame({"category": ["No Data"], "count": [1]})
     return px.pie(empty_df, values="count", names="category", title=title)
 
-def load_version_specific_analytics(version=None):
+def load_version_specific_analytics():
     """Load all analytics charts for a specific version"""
-    version = version or "summaries/v=1.2"  # Default to v=1.2
+    version = "summaries/v=1.2"  # Only v1.2 supported
     try:
         data = fetch_summaries_from_athena(version)
         if "error" in data:
@@ -686,7 +691,7 @@ def load_version_specific_analytics(version=None):
 
         # Theme Trends Chart
         try:
-            themes_fig = load_themes_from_api(version)
+            themes_fig = load_themes_from_api()
         except Exception:
             themes_fig = _create_empty_bar_chart(f"Top Discussion Themes - Version {version} (No Data)")
 
@@ -961,7 +966,6 @@ def render_escalation_table(items: list) -> str:
         mid = html.escape(str(item.get("meetingId", "")))
         coach = html.escape(str(item.get("coach") or item.get("coachName", "Unknown")))
         employer = html.escape(str(item.get("employerName", "Unknown")))
-        print("Item print ",item)
 
         # Detailed risk analysis with evidence
         risk_indicators = []
@@ -1123,7 +1127,13 @@ def get_case_for_meeting(meeting_id: str) -> str:
             return json.dumps({"error": "Failed to fetch case JSON", "status": cj.status_code}, indent=2)
         try:
             case_data = cj.json()
-            # Extract case_json from inputContent
+
+            # Check if this is the new direct case check format
+            if "results" in case_data and "overall" in case_data and "meeting_id" in case_data:
+                # New format: case check data is directly in the response
+                return json.dumps(case_data, indent=2)
+
+            # Legacy format: extract case_json from inputContent
             input_content = case_data.get("inputContent", {})
             case_json_str = input_content.get("case_json")
 
@@ -1132,7 +1142,12 @@ def get_case_for_meeting(meeting_id: str) -> str:
                 case_json = json.loads(case_json_str)
                 return json.dumps(case_json, indent=2)
             else:
-                return json.dumps({"error": "No case_json found in case check data"}, indent=2)
+                # Neither format found, return the raw response for debugging
+                return json.dumps({
+                    "error": "No case_json found in case check data",
+                    "available_keys": list(case_data.keys()),
+                    "raw_response": case_data
+                }, indent=2)
         except json.JSONDecodeError as e:
             return json.dumps({"error": f"Failed to parse case_json: {str(e)}"}, indent=2)
         except Exception as e:
@@ -1183,17 +1198,6 @@ def run_df(sql: str) -> pd.DataFrame:
 # Sanitise version literal to avoid SQL injection
 _VER_SAFE = re.compile(r"^[A-Za-z0-9/_=\.\-]+$")
 
-def _ver(v: str) -> str:
-    """Convert version format to schema version for Athena views"""
-    v = v or S3_PREFIX
-
-    # Extract version number from various formats
-    if "1.1" in v:
-        return "1.1"
-    elif "1.2" in v:
-        return "1.2"
-    else:
-        return "1.2"  # default to latest version
 
 # Base queries (assume views expose 'version'; we’ll try filtered first, then fallback)
 Q_OVERVIEW_FILTERED = """
@@ -1271,7 +1275,7 @@ ORDER BY avg_quality_score DESC
 
 
 def _try_versioned_sql(sql_filtered: str, sql_unfiltered: str, version: str):
-    sql_f = sql_filtered.format(db=ATHENA_DATABASE, ver=_ver(version))
+    sql_f = sql_filtered.format(db=ATHENA_DATABASE, ver="1.2")
     sql_u = sql_unfiltered.format(db=ATHENA_DATABASE)
     try:
         df = run_df(sql_f)
@@ -1294,27 +1298,37 @@ def _try_versioned_sql(sql_filtered: str, sql_unfiltered: str, version: str):
                 return pd.DataFrame(), "Table unavailable due to JSON formatting issues"
             raise
 
-def load_overview_versioned(version: str):
+def load_overview():
     try:
-        df, info = _try_versioned_sql(Q_OVERVIEW_FILTERED, Q_OVERVIEW_UNFILTERED, version)
+        df = run_df(Q_OVERVIEW_FILTERED.format(db=ATHENA_DATABASE, ver="1.2"))
         fig = px.bar(df, x="sentiment", y="meetings", title="Meetings by Sentiment (Athena)")
-        return df, fig, info
+        return df, fig
     except Exception as e:
-        msg = f"Athena error: {e}"
-        return pd.DataFrame({"error":[msg]}), None, msg
+        try:
+            df = run_df(Q_OVERVIEW_UNFILTERED.format(db=ATHENA_DATABASE))
+            fig = px.bar(df, x="sentiment", y="meetings", title="Meetings by Sentiment (Athena)")
+            return df, fig
+        except Exception:
+            msg = f"Athena error: {e}"
+            return pd.DataFrame({"error":[msg]}), None
 
-def load_themes_versioned(version: str):
+def load_themes():
     try:
-        df, info = _try_versioned_sql(Q_THEMES_FILTERED, Q_THEMES_UNFILTERED, version)
+        df = run_df(Q_THEMES_FILTERED.format(db=ATHENA_DATABASE, ver="1.2"))
         fig = px.bar(df, x="theme_label", y="mentions", title="Top Themes")
-        return df, fig, info
+        return df, fig
     except Exception as e:
-        msg = f"Athena error: {e}"
-        return pd.DataFrame({"error":[msg]}), None, msg
+        try:
+            df = run_df(Q_THEMES_UNFILTERED.format(db=ATHENA_DATABASE))
+            fig = px.bar(df, x="theme_label", y="mentions", title="Top Themes")
+            return df, fig
+        except Exception:
+            msg = f"Athena error: {e}"
+            return pd.DataFrame({"error":[msg]}), None
 
-def load_case_quality_versioned(version: str):
+def load_case_quality():
     try:
-        df, info = _try_versioned_sql(Q_CASE_QUALITY_FILTERED, Q_CASE_QUALITY_UNFILTERED, version)
+        df = run_df(Q_CASE_QUALITY_FILTERED.format(db=ATHENA_DATABASE, ver="1.2"))
         if df is not None and not df.empty:
             # Update for new column names from partitioned tables
             if "avg_quality_score" in df.columns:
@@ -1327,10 +1341,25 @@ def load_case_quality_versioned(version: str):
                 fig = None
         else:
             fig = None
-        return df, fig, info
+        return df, fig
     except Exception as e:
-        msg = f"Athena error: {e}"
-        return pd.DataFrame({"error":[msg]}), None, msg
+        try:
+            df = run_df(Q_CASE_QUALITY_UNFILTERED.format(db=ATHENA_DATABASE))
+            if df is not None and not df.empty:
+                if "avg_quality_score" in df.columns:
+                    df["avg_quality_score_pct"] = (df["avg_quality_score"].astype(float) * 100).round(2)
+                    fig = px.bar(df, x="coach", y="avg_quality_score", title="Avg Quality Score by Coach")
+                elif "avg_case_pass" in df.columns:
+                    df["avg_case_pass_pct"] = (df["avg_case_pass"].astype(float) * 100).round(2)
+                    fig = px.bar(df, x="coach", y="avg_case_pass_pct", title="Avg Case Pass Rate by Coach (%)")
+                else:
+                    fig = None
+            else:
+                fig = None
+            return df, fig
+        except Exception:
+            msg = f"Athena error: {e}"
+            return pd.DataFrame({"error":[msg]}), None
 
 # Version comparison queries
 Q_VERSION_COMPARISON = """
@@ -1554,17 +1583,11 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
     # ---------- Dashboard (API) ----------
     with gr.Tab("Dashboard"):
         gr.Markdown("### 📊 Coaching Insights Dashboard")
-        gr.Markdown("🎯 **Showing v=1.2 data with complete compliance fields** - Use version selector to change data scope.")
-        gr.Markdown("💡 **Tip**: v=1.2 includes batch-processed meetings with full compliance analysis. Older versions may have incomplete data.")
+        gr.Markdown("🎯 **Showing v1.2 data with complete compliance fields**")
+        gr.Markdown("💡 **Note**: Only v1.2 data is supported. All summaries use the latest schema version.")
 
-        # Version selector at the top
+        # Refresh button
         with gr.Row():
-            version_selector = gr.Dropdown(
-                label="📦 Select Version",
-                choices=["summaries/v=1.2", "summaries/v=1.1", "summaries/v=1.0", "summaries", "all"],
-                value="summaries/v=1.2",
-                info="v=1.2 has complete compliance data. Older versions may have missing fields."
-            )
             refresh_dashboard_btn = gr.Button("🔄 Refresh Dashboard", variant="primary")
 
         # Data quality indicator
@@ -1589,8 +1612,8 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
             risk_plot = gr.Plot(label="Risk & Vulnerability")
 
         # Load basic KPIs with data filtering
-        def load_dashboard_kpis(version=None):
-            version = version or "summaries/v=1.2"
+        def load_dashboard_kpis():
+            version = "summaries/v=1.2"
             data = fetch_summaries_from_athena(version)
             if "error" in data:
                 return 0, "0.00", 0, 0, ""
@@ -1618,60 +1641,31 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
             return total, f"{avg_actions:.2f}", escalations, negative_sentiment, quality_info
 
         # Load initial charts and KPIs
-        def load_all_dashboard_data(version=None):
-            """Load all dashboard data for the selected version"""
+        def load_all_dashboard_data():
+            """Load all dashboard data (v1.2 only)"""
             # Load KPIs
-            kpis = load_dashboard_kpis(version)
+            kpis = load_dashboard_kpis()
 
             # Load charts
-            charts = load_version_specific_analytics(version)
+            charts = load_version_specific_analytics()
 
-            # Update version selector with available versions
-            data = fetch_summaries_from_athena(version or "summaries/v=1.2")
-            if "error" not in data:
-                versions = _extract_versions(data.get("items", []))
-                # Prioritize v=1.2 and add common version patterns if not found
-                if not versions:
-                    versions = ["summaries/v=1.2", "summaries/v=1.1"]
-                else:
-                    # Ensure v=1.2 is first
-                    if "summaries/v=1.2" in versions:
-                        versions.remove("summaries/v=1.2")
-                    versions = ["summaries/v=1.2"] + versions
-                if "all" not in versions:
-                    versions = versions + ["all"]
-                version_choices = gr.update(choices=versions, value=version or "summaries/v=1.2")
-            else:
-                # Fallback to default choices with v=1.2 first
-                default_versions = ["summaries/v=1.2", "summaries/v=1.1"]
-                version_choices = gr.update(choices=default_versions, value=version or "summaries/v=1.2")
-
-            return (*kpis, *charts, version_choices)
+            return (*kpis, *charts)
 
         app.load(
             fn=lambda: load_all_dashboard_data(),
             inputs=None,
             outputs=[kpi_total, kpi_avg_actions, kpi_escalations, kpi_negative_sentiment, data_quality_info,
-                    coach_performance_plot, sentiment_plot, themes_plot, risk_plot, version_selector]
+                    coach_performance_plot, sentiment_plot, themes_plot, risk_plot]
         )
 
-        # Wire up version selector and refresh button
-        def on_version_change(version):
-            return load_all_dashboard_data(version)
-
-        version_selector.change(
-            fn=on_version_change,
-            inputs=[version_selector],
-            outputs=[kpi_total, kpi_avg_actions, kpi_escalations, kpi_negative_sentiment, data_quality_info,
-                    coach_performance_plot, sentiment_plot, themes_plot, risk_plot, version_selector]
-        )
-
+        # Wire up refresh button
         refresh_dashboard_btn.click(
-            fn=on_version_change,
-            inputs=[version_selector],
+            fn=lambda: load_all_dashboard_data(),
+            inputs=None,
             outputs=[kpi_total, kpi_avg_actions, kpi_escalations, kpi_negative_sentiment, data_quality_info,
-                    coach_performance_plot, sentiment_plot, themes_plot, risk_plot, version_selector]
+                    coach_performance_plot, sentiment_plot, themes_plot, risk_plot]
         )
+
 
         # Escalation Summary Section
         gr.Markdown("### 🚨 Meetings Requiring Attention")
@@ -1679,8 +1673,8 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
         escalation_table = gr.HTML()
 
         # Load escalation data with filtering
-        def load_escalations(version=None):
-            version = version or "summaries/v=1.2"
+        def load_escalations():
+            version = "summaries/v=1.2"
             data = fetch_summaries_from_athena(version)
             if "error" in data:
                 return f"<p>Error loading escalation data for version {version}</p>"
@@ -1697,10 +1691,7 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
             return render_escalation_table(escalation_items)
 
         app.load(fn=lambda: load_escalations(), inputs=None, outputs=[escalation_table])
-        escalation_refresh_btn.click(fn=load_escalations, inputs=[version_selector], outputs=[escalation_table])
-
-        # Also update escalations when version changes
-        version_selector.change(fn=load_escalations, inputs=[version_selector], outputs=[escalation_table])
+        escalation_refresh_btn.click(fn=load_escalations, inputs=None, outputs=[escalation_table])
 
 
     # ---------- Insights (Athena) ----------
@@ -1713,42 +1704,40 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
             # --- Top Discussion Themes (Business Value)
             gr.Markdown("**What are clients talking about?**")
             th_plot = gr.Plot()
-            th_debug = gr.Markdown("")
 
             def load_themes_fallback():
                 try:
                     # Try Athena first
-                    df, fig, info = load_themes_versioned(S3_PREFIX)
+                    df, fig = load_themes()
                     if fig and not df.empty:
-                        return fig, f"✅ {info}"
+                        return fig
                     else:
                         # Fallback to API data
-                        return load_themes_from_api(S3_PREFIX), "📊 Using API data (Athena unavailable)"
+                        return load_themes_from_api()
                 except Exception as e:
                     # Fallback to API data
-                    return load_themes_from_api(S3_PREFIX), f"📊 Using API data - Athena error: {str(e)[:100]}"
+                    return load_themes_from_api()
 
-            app.load(lambda: load_themes_fallback(), None, [th_plot, th_debug])
+            app.load(lambda: load_themes_fallback(), None, [th_plot])
 
             # --- Coach Quality Performance (Business Value)
             gr.Markdown("**Coach performance by quality score**")
             cq_plot = gr.Plot()
-            cq_debug = gr.Markdown("")
 
             def load_quality_fallback():
                 try:
                     # Try Athena first
-                    df, fig, info = load_case_quality_versioned(S3_PREFIX)
+                    df, fig = load_case_quality()
                     if fig and not df.empty:
-                        return fig, f"✅ {info}"
+                        return fig
                     else:
                         # Fallback to API data
-                        return load_quality_from_api(), "📊 Using API data (Athena unavailable)"
+                        return load_quality_from_api()
                 except Exception as e:
                     # Fallback to API data
-                    return load_quality_from_api(), f"📊 Using API data - Athena error: {str(e)[:100]}"
+                    return load_quality_from_api()
 
-            app.load(lambda: load_quality_fallback(), None, [cq_plot, cq_debug])
+            app.load(lambda: load_quality_fallback(), None, [cq_plot])
 
 if __name__ == "__main__":
     # Lambda Web Adapter expects 0.0.0.0 and PORT

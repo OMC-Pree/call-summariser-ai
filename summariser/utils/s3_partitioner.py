@@ -14,8 +14,8 @@ class S3Partitioner:
 
     def __init__(self, base_prefix: str = "summaries"):
         self.base_prefix = base_prefix.rstrip('/')
-        self.athena_partitioned = os.getenv('ATHENA_PARTITIONED', 'false').lower() == 'true'
-        self.schema_version = os.getenv('SUMMARY_SCHEMA_VERSION', '1.2')
+        self.athena_partitioned = os.getenv('ATHENA_PARTITIONED', 'true').lower() == 'true'
+        self.schema_version = "1.2"  # Only support v1.2
 
     def get_summary_path(self,
                         meeting_id: str,
@@ -29,26 +29,15 @@ class S3Partitioner:
         if timestamp is None:
             timestamp = datetime.utcnow()
 
-        if self.athena_partitioned:
-            # Athena-optimized partitioned structure
-            path_parts = [
-                self.base_prefix,
-                f"version={self.schema_version}",
-                f"year={timestamp.year}",
-                f"month={timestamp.month:02d}",
-                f"meeting_id={meeting_id}",
-                "summary.json" if is_latest else f"summary_{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
-            ]
-        else:
-            # Legacy structure for backward compatibility
-            path_parts = [
-                self.base_prefix,
-                f"v={self.schema_version}",
-                "meetings",
-                meeting_id,
-                "latest" if is_latest else f"schema={self.schema_version}",
-                "summary.json" if is_latest else f"ts={timestamp.strftime('%Y%m%dT%H%M%SZ')}/summary.json"
-            ]
+        # Always use Athena-optimized partitioned structure (v1.2 only)
+        path_parts = [
+            self.base_prefix,
+            f"version={self.schema_version}",
+            f"year={timestamp.year}",
+            f"month={timestamp.month:02d}",
+            f"meeting_id={meeting_id}",
+            "summary.json" if is_latest else f"summary_{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
+        ]
 
         return "/".join(path_parts)
 
@@ -57,21 +46,15 @@ class S3Partitioner:
         if timestamp is None:
             timestamp = datetime.utcnow()
 
-        if self.athena_partitioned:
-            path_parts = [
-                "transcripts",
-                f"version={self.schema_version}",
-                f"year={timestamp.year}",
-                f"month={timestamp.month:02d}",
-                f"meeting_id={meeting_id}",
-                "transcript.json"
-            ]
-        else:
-            path_parts = [
-                "transcripts",
-                meeting_id,
-                "transcript.json"
-            ]
+        # Always use partitioned structure (v1.2 only)
+        path_parts = [
+            "transcripts",
+            f"version={self.schema_version}",
+            f"year={timestamp.year}",
+            f"month={timestamp.month:02d}",
+            f"meeting_id={meeting_id}",
+            "transcript.json"
+        ]
 
         return "/".join(path_parts)
 
@@ -114,7 +97,7 @@ TBLPROPERTIES (
     'has_encrypted_data'='false',
     'projection.enabled'='true',
     'projection.version.type'='enum',
-    'projection.version.values'='1.0,1.1,1.2',
+    'projection.version.values'='1.2',
     'projection.year.type'='integer',
     'projection.year.range'='2024,2030',
     'projection.year.interval'='1',

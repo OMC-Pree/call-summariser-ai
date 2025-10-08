@@ -53,55 +53,25 @@ def lambda_handler(event, context):
                 if e.response['Error']['Code'] != '404':
                     raise  # Re-raise if not a 404
 
-        # Migration fallback: check for files with previous schema versions
+        # Only check v1.2 format if not found in DynamoDB
         checked_keys = [latest_key, key]
         if not valid_key:
-            from utils.s3_partitioner import get_s3_partitioner
             from datetime import datetime, timezone
-            import re
 
-            # Try to extract date from meeting ID or fall back to current date
+            # Use current date for partitioned path
             now = datetime.now(timezone.utc)
             year, month = now.year, now.month
 
-            # Check for files that should exist in new partitioned format based on old schema versions
-            partitioner = get_s3_partitioner()
-
-            # Try different schema versions and time periods
-            schema_versions = ["1.2", "1.1", "1.0"]
-            time_periods = [
-                (year, month),
-                (year, (month-1) if month > 1 else 12),  # Previous month
-                (year-1 if month == 1 else year, 12 if month == 1 else month-1)  # Handle year boundary
-            ]
-
-            migration_keys = []
-
-            # Check new partitioned format for different versions
-            for version in schema_versions:
-                for check_year, check_month in time_periods:
-                    new_format_key = f"summaries/version={version}/year={check_year}/month={check_month:02d}/meeting_id={meeting_id}/summary.json"
-                    migration_keys.append(new_format_key)
-
-            # Check legacy format paths
-            for check_year, check_month in time_periods:
-                for version in ["v1.1", "v1.0", ""]:
-                    version_suffix = f".{version}" if version else ""
-                    legacy_format_key = f"summaries/{check_year}/{check_month:02d}/{meeting_id}/summary{version_suffix}.json"
-                    migration_keys.append(legacy_format_key)
-
-            # Check all migration paths
-            for migration_key in migration_keys:
-                if migration_key not in checked_keys:  # Avoid duplicate checks
-                    try:
-                        s3.head_object(Bucket=SUMMARY_BUCKET, Key=migration_key)
-                        valid_key = migration_key
-                        checked_keys.append(migration_key)
-                        break
-                    except ClientError as e:
-                        if e.response['Error']['Code'] != '404':
-                            raise  # Re-raise if not a 404
-                        checked_keys.append(migration_key)
+            # Check v1.2 partitioned format only
+            v12_key = f"summaries/version=1.2/year={year}/month={month:02d}/meeting_id={meeting_id}/summary.json"
+            try:
+                s3.head_object(Bucket=SUMMARY_BUCKET, Key=v12_key)
+                valid_key = v12_key
+                checked_keys.append(v12_key)
+            except ClientError as e:
+                if e.response['Error']['Code'] != '404':
+                    raise  # Re-raise if not a 404
+                checked_keys.append(v12_key)
 
         if not valid_key:
             return _resp(404, {"error": "Summary file not found in S3", "meetingId": meeting_id, "checkedKeys": checked_keys})
