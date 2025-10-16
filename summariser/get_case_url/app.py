@@ -49,16 +49,16 @@ def lambda_handler(event, context):
             now = datetime.now(timezone.utc)
             year, month = now.year, now.month
 
-            # Check v1.2 partitioned format only
-            case_key_v12 = f"summaries/version=1.2/year={year}/month={month:02d}/meeting_id={meeting_id}/case_check.v1.0.json"
+            # Check v1.2 partitioned format in supplementary/ subdirectory (new structure)
+            case_key = f"summaries/supplementary/version=1.2/year={year}/month={month:02d}/meeting_id={meeting_id}/case_check.v1.0.json"
             try:
-                s3.head_object(Bucket=BUCKET, Key=case_key_v12)
-                valid_key = case_key_v12
-                checked_keys.append(case_key_v12)
+                s3.head_object(Bucket=BUCKET, Key=case_key)
+                valid_key = case_key
+                checked_keys.append(case_key)
             except ClientError as e:
                 if e.response['Error']['Code'] != '404':
                     raise  # Re-raise if not a 404
-                checked_keys.append(case_key_v12)
+                checked_keys.append(case_key)
 
         if not valid_key:
             return _r(404, {

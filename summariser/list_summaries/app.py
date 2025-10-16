@@ -1,17 +1,21 @@
 # summariser/list_summaries/app.py
 import json
 import os
-import re
 import boto3
 from decimal import Decimal
 
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
-SUMMARY_BUCKET     = os.environ["SUMMARY_BUCKET"]
-JOB_TABLE          = os.environ["SUMMARY_JOB_TABLE"]
-S3_PREFIX_CURRENT  = os.getenv("S3_PREFIX", "summaries")  # e.g. "summaries/v=1.1" or just "summaries"
+SUMMARY_BUCKET = os.environ["SUMMARY_BUCKET"]
+JOB_TABLE = os.environ["SUMMARY_JOB_TABLE"]
 TABLE = dynamodb.Table(JOB_TABLE)
+PREFIX_VERSION = "summaries/v=1.2"  # Only support v1.2
+PROJECTION = (
+    "meetingId, #s, updatedAt, summaryKey, caseCheckKey, "
+    "sentiment, actionCount, casePassRate, caseFailedCount, "
+    "promptVersion, modelVersion, a2iCaseLoop, employerName"
+)
 
 # ---------- Helpers ----------
 def _to_jsonable(obj):
@@ -31,29 +35,6 @@ def _resp(code, body):
         "body": json.dumps(_to_jsonable(body)),
     }
 
-def _norm_prefix(p: str) -> str:
-    """Normalize 'summaries/v=1.1/' -> 'summaries/v=1.1' (no trailing slash)."""
-    return (p or "").strip().strip("/")
-
-_V_RE = re.compile(r"^v=.+$")
-
-def _infer_prefix_version_from_key(key: str) -> str | None:
-    """
-    Infer the logical prefix "summaries" or "summaries/v=..." from an S3 key path.
-    Examples:
-      summaries/2025/09/om-123/summary.v1.1.json        -> 'summaries'
-      summaries/v=1.1/2025/09/om-123/summary.v1.1.json  -> 'summaries/v=1.1'
-    """
-    if not key:
-        return None
-    parts = key.split("/")
-    if not parts:
-        return None
-    root = parts[0]
-    if len(parts) > 1 and _V_RE.match(parts[1]):
-        return f"{root}/{parts[1]}"
-    return root
-
 def _presign_or_none(key: str | None, expires=300) -> str | None:
     if not key:
         return None
@@ -64,51 +45,30 @@ def _presign_or_none(key: str | None, expires=300) -> str | None:
     )
 
 # ---------- Handler ----------
-def lambda_handler(event, context):
+def lambda_handler(event, _context):
     qs = event.get("queryStringParameters") or {}
 
     # Pagination cap (soft)
     try:
         limit = int(qs.get("limit", "200"))
-    except Exception:
+    except (ValueError, TypeError):
         limit = 200
     limit = max(1, min(limit, 1000))
 
     # Status slice (default COMPLETED)
     status_filter = (qs.get("status") or "COMPLETED").upper()
 
-    # Version slice. If omitted, default to current S3_PREFIX. 'all'/* disables version filtering.
-    requested_version = _norm_prefix(qs.get("version") or S3_PREFIX_CURRENT)
-    version_filter_enabled = requested_version not in ("", "all", "*")
-
-    # Build a minimal projection (add employerName/prefixVersion for FE)
-    proj = (
-        "meetingId, #s, updatedAt, summaryKey, caseCheckKey, "
-        "sentiment, actionCount, casePassRate, caseFailedCount, "
-        "promptVersion, modelVersion, a2iCaseLoop, employerName, prefixVersion"
-    )
+    # Build a minimal projection
     ean = {"#s": "status"}
 
     # Full scan (table is small). Server-side DDB FilterExpression would still read items,
     # so we filter in-code and stop once we hit 'limit'.
     items = []
-    resp = TABLE.scan(ProjectionExpression=proj, ExpressionAttributeNames=ean)
+    resp = TABLE.scan(ProjectionExpression=PROJECTION, ExpressionAttributeNames=ean)
     while True:
         for it in resp.get("Items", []):
             if (str(it.get("status") or "")).upper() != status_filter:
                 continue
-
-            # Version filter
-            if version_filter_enabled:
-                pv = _norm_prefix(it.get("prefixVersion") or "")
-                if pv:
-                    if pv != requested_version:
-                        continue
-                else:
-                    # Back-compat: infer from summaryKey if prefixVersion missing
-                    inferred = _infer_prefix_version_from_key(it.get("summaryKey") or "")
-                    if _norm_prefix(inferred or "") != requested_version:
-                        continue
 
             items.append(it)
             if len(items) >= limit:
@@ -119,7 +79,7 @@ def lambda_handler(event, context):
 
         resp = TABLE.scan(
             ExclusiveStartKey=resp["LastEvaluatedKey"],
-            ProjectionExpression=proj,
+            ProjectionExpression=PROJECTION,
             ExpressionAttributeNames=ean,
         )
 
@@ -131,9 +91,6 @@ def lambda_handler(event, context):
     for it in items:
         summary_key = it.get("summaryKey")
         case_key = it.get("caseCheckKey")
-
-        # Choose the best-known prefixVersion for the FE
-        pv = it.get("prefixVersion") or _infer_prefix_version_from_key(summary_key) or requested_version
 
         out.append({
             "meetingId": it.get("meetingId"),
@@ -147,7 +104,7 @@ def lambda_handler(event, context):
             "promptVersion": it.get("promptVersion"),
             "modelVersion": it.get("modelVersion"),
             "employerName": it.get("employerName") or "No employer",
-            "prefixVersion": pv,
+            "prefixVersion": PREFIX_VERSION,
             "summaryUrl": _presign_or_none(summary_key),
             "caseUrl": _presign_or_none(case_key),
         })

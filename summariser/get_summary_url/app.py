@@ -62,16 +62,17 @@ def lambda_handler(event, context):
             now = datetime.now(timezone.utc)
             year, month = now.year, now.month
 
-            # Check v1.2 partitioned format only
-            v12_key = f"summaries/version=1.2/year={year}/month={month:02d}/meeting_id={meeting_id}/summary.json"
+            # Check v1.2 partitioned format in data/ subdirectory (new structure)
+            summary_key = f"summaries/data/version=1.2/year={year}/month={month:02d}/meeting_id={meeting_id}/summary.json"
             try:
-                s3.head_object(Bucket=SUMMARY_BUCKET, Key=v12_key)
-                valid_key = v12_key
-                checked_keys.append(v12_key)
+                s3.head_object(Bucket=SUMMARY_BUCKET, Key=summary_key)
+                valid_key = summary_key
+                checked_keys.append(summary_key)
             except ClientError as e:
                 if e.response['Error']['Code'] != '404':
                     raise  # Re-raise if not a 404
-                checked_keys.append(v12_key)
+                checked_keys.append(summary_key)
+
 
         if not valid_key:
             return _resp(404, {"error": "Summary file not found in S3", "meetingId": meeting_id, "checkedKeys": checked_keys})

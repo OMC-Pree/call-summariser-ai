@@ -64,7 +64,7 @@ TBLPROPERTIES (
     'has_encrypted_data'='false',
     'projection.enabled'='true',
     'projection.version.type'='enum',
-    'projection.version.values'='1.0,1.1',
+    'projection.version.values'='1.0,1.1,1.2',
     'projection.year.type'='integer',
     'projection.year.range'='2024,2030',
     'projection.year.interval'='1',
@@ -96,7 +96,7 @@ SELECT
     year,
     month
 FROM call_summaries.summaries
-WHERE version = '1.1'  -- Current version
+WHERE version = '1.2'  -- Current version
     AND year >= year(current_date) - 1  -- Last year and current
 ORDER BY meeting.createdAt DESC;
 

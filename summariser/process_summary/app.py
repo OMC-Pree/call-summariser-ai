@@ -77,22 +77,6 @@ class CaseCheckPayload(BaseModel):
     results: List[CaseCheckResult]
     overall: dict
 
-# --- Starter Session checklist (inline, no RAG) ---
-# STARTER_SESSION_CHECKS = [
-#     {"id": "call_recording_confirmed", "prompt": "Did the coach confirm call recording?", "required": True, "severity": "medium"},
-#     {"id": "regulated_advice_given", "prompt": "Did the coach properly avoid giving regulated financial advice (no personal product/investment recommendations)?", "required": True, "severity": "high"},
-#     {"id": "dob_confirmed", "prompt": "Was the client's date of birth confirmed?", "required": True, "severity": "medium"},
-#     {"id": "full_name_confirmed", "prompt": "Was the client's full name confirmed?", "required": True, "severity": "medium"},
-#     {"id": "financial_info_confirmed", "prompt": "Was the client's financial information confirmed (income, debts, savings or similar)?", "required": True, "severity": "medium"},
-#     {"id": "partner_status_confirmed", "prompt": "Was partner/marital status confirmed?", "required": False, "severity": "low"},
-#     {"id": "dependents_confirmed", "prompt": "Were dependents confirmed?", "required": False, "severity": "low"},
-#     {"id": "vulnerability_identified", "prompt": "Was any vulnerability identified or discussed?", "required": True, "severity": "medium"},
-#     {"id": "citizenship_residency_confirmed", "prompt": "Were citizenship and residency confirmed?", "required": True, "severity": "medium"},
-#     {"id": "fees_charges_explained", "prompt": "Were fees and charges correctly explained to the client?", "required": True, "severity": "medium"},
-#     {"id": "client_agreed_to_sign_up", "prompt": "Did the client agree to sign up to the service?", "required": False, "severity": "medium"},
-#     {"id": "pension_withdrawal_5y_discussed_50plus", "prompt": "If the client is 50 or older, did the coach discuss chances of withdrawing from their pension within 5 years?", "required": False, "severity": "high", "condition": "client_age>=50"}
-# ]
-
 STARTER_SESSION_CHECKS = [
     # === Compliance Section (based on Excel) ===
     {
@@ -241,7 +225,7 @@ def _to_ddb_numbers(obj):
     return obj
 
 # ---------- Status helpers ----------
-def set_status(meeting_id: str, status: str, extra: dict | None = None) -> None:
+def set_status(meeting_id: str, status: str, extra: dict | None = None, force: bool = False) -> None:
     status_up = status.upper()
     now_iso = datetime.now(timezone.utc).isoformat()
     exp_ts  = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
@@ -261,8 +245,8 @@ def set_status(meeting_id: str, status: str, extra: dict | None = None) -> None:
 
     update_expr = "SET " + ", ".join(set_parts)
 
-    if status_up == "COMPLETED":
-        # Always allow COMPLETED to write
+    if status_up == "COMPLETED" or force:
+        # Always allow COMPLETED or force to write without condition
         JOB_TABLE_REF.update_item(
             Key={"meetingId": meeting_id},
             UpdateExpression=update_expr,
@@ -554,8 +538,8 @@ def fetch_transcript_by_zoom_meeting_id(zoom_meeting_id: str) -> Tuple[str, str]
         partitioner = get_s3_partitioner()
 
         if ATHENA_PARTITIONED:
-            # Use new Athena-partitioned format
-            base = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={zoom_meeting_id}"
+            # Save supplementary files (transcripts, VTT) to supplementary/ subdirectory
+            base = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={zoom_meeting_id}"
         else:
             # Legacy format for backward compatibility
             base = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{zoom_meeting_id}"
@@ -735,15 +719,20 @@ def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list) -
         cleaned_transcript=cleaned_transcript
     )
 
-def _save_case_json(meeting_id: str, payload: dict) -> str:
-    now = datetime.now(timezone.utc)
+def _save_case_json(meeting_id: str, payload: dict, year: int = None, month: int = None) -> str:
+    # Use provided year/month (from summary partition) or fallback to current date
+    if year is None or month is None:
+        now = datetime.now(timezone.utc)
+        year = now.year
+        month = now.month
 
     if ATHENA_PARTITIONED:
-        # Use new Athena-partitioned format
-        key = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
+        # Save case check to supplementary/ subdirectory
+        # Use the same year/month partition as the summary for consistency
+        key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={year}/month={month:02d}/meeting_id={meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
     else:
         # Legacy format for backward compatibility
-        key = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
+        key = f"{S3_PREFIX}/{year:04d}/{month:02d}/{meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
 
     s3.put_object(
         Bucket=SUMMARY_BUCKET,
@@ -751,6 +740,7 @@ def _save_case_json(meeting_id: str, payload: dict) -> str:
         Body=json.dumps(payload).encode("utf-8"),
         ContentType="application/json",
     )
+    helper.log_json("INFO", "CASE_CHECK_SAVED", meetingId=meeting_id, s3Key=key)
     return key
 
 # ==== A2I additions START ====
@@ -858,11 +848,11 @@ def _summary_object_keys(meeting_id: str) -> tuple[str, str]:
     athena_partitioned = ATHENA_PARTITIONED
 
     if athena_partitioned:
-        # Athena-optimized partitioned structure
-        # Format: summaries/version=1.1/year=2025/month=09/meeting_id=123/summary_20250918T123456Z.json
-        run_key = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={timestamp.year}/month={timestamp.month:02d}/meeting_id={meeting_id}/summary_{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
+        # Athena-optimized partitioned structure - save to data/ subdirectory
+        # Format: summaries/data/version=1.2/year=2025/month=09/meeting_id=123/summary.json
+        run_key = f"{S3_PREFIX}/data/version={SCHEMA_VERSION}/year={timestamp.year}/month={timestamp.month:02d}/meeting_id={meeting_id}/summary_{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
         # Latest pointer in same partition
-        latest_key = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={timestamp.year}/month={timestamp.month:02d}/meeting_id={meeting_id}/summary.json"
+        latest_key = f"{S3_PREFIX}/data/version={SCHEMA_VERSION}/year={timestamp.year}/month={timestamp.month:02d}/meeting_id={meeting_id}/summary.json"
     else:
         # Legacy structure for backward compatibility
         run_id = _run_id()
@@ -872,8 +862,15 @@ def _summary_object_keys(meeting_id: str) -> tuple[str, str]:
     return run_key, latest_key
 
 
-def run_case_check(meeting_id: str, cleaned_transcript: str) -> tuple[dict, str]:
-    """Returns (payload_dict, s3_key)."""
+def run_case_check(meeting_id: str, cleaned_transcript: str, year: int = None, month: int = None) -> tuple[dict, str]:
+    """Returns (payload_dict, s3_key).
+
+    Args:
+        meeting_id: The meeting identifier
+        cleaned_transcript: The redacted transcript text
+        year: Year for S3 partition (should match summary partition)
+        month: Month for S3 partition (should match summary partition)
+    """
     prompt = _build_case_prompt(meeting_id, cleaned_transcript, STARTER_SESSION_CHECKS)
 
     body = json.dumps({
@@ -927,7 +924,7 @@ def run_case_check(meeting_id: str, cleaned_transcript: str) -> tuple[dict, str]
         # except Exception:
         #     r["confidence"] = 0.0
 
-    key = _save_case_json(meeting_id, data)
+    key = _save_case_json(meeting_id, data, year=year, month=month)
     return (data, key)
 
 # ---------- Handler ----------
@@ -948,14 +945,58 @@ def lambda_handler(event, context):
         transcript = message.get("transcript")
         zoom_meeting_id = str(message.get("zoomMeetingId") or "").replace(" ", "")
         enable_case_check = bool(message.get("enableCaseCheck", False))
+        force_reprocess = bool(message.get("forceReprocess", False))
 
         try:
-            helper.log_json("INFO", "PIPELINE_START", meetingId=meeting_id, enableCaseCheck=enable_case_check)
+            helper.log_json("INFO", "PIPELINE_START", meetingId=meeting_id, enableCaseCheck=enable_case_check, forceReprocess=force_reprocess)
 
             # Idempotency (handles SQS redeliveries)
-            if job_is_completed(meeting_id):
+            # Skip check if force_reprocess is enabled
+            if not force_reprocess and job_is_completed(meeting_id):
                 helper.log_json("INFO", "JOB_SKIPPED_ALREADY_COMPLETED", meetingId=meeting_id)
                 continue
+
+            # If force reprocess is enabled, reset status to allow overwriting
+            if force_reprocess:
+                helper.log_json("INFO", "FORCE_REPROCESS_ENABLED", meetingId=meeting_id)
+                set_status(meeting_id, "PROCESSING", force=True)
+
+                # Delete old summary and case check files to ensure fresh reprocessing
+                helper.log_json("INFO", "DELETING_OLD_FILES", meetingId=meeting_id)
+
+                # Try to get existing file paths from DynamoDB
+                try:
+                    resp = JOB_TABLE_REF.get_item(Key={"meetingId": meeting_id})
+                    ddb_item = resp.get("Item", {})
+                    old_summary_key = ddb_item.get("latestSummaryKey")
+                    old_case_key = ddb_item.get("caseCheckKey")
+
+                    # Delete old summary file
+                    if old_summary_key:
+                        try:
+                            s3.delete_object(Bucket=SUMMARY_BUCKET, Key=old_summary_key)
+                            helper.log_json("INFO", "DELETED_OLD_SUMMARY", meetingId=meeting_id, key=old_summary_key)
+                        except Exception as e:
+                            helper.log_json("WARN", "FAILED_DELETE_SUMMARY", meetingId=meeting_id, error=str(e))
+
+                    # Delete old case check file
+                    if old_case_key:
+                        try:
+                            s3.delete_object(Bucket=SUMMARY_BUCKET, Key=old_case_key)
+                            helper.log_json("INFO", "DELETED_OLD_CASE_CHECK", meetingId=meeting_id, key=old_case_key)
+                        except Exception as e:
+                            helper.log_json("WARN", "FAILED_DELETE_CASE_CHECK", meetingId=meeting_id, error=str(e))
+
+                    # Clear the keys from DynamoDB
+                    JOB_TABLE_REF.update_item(
+                        Key={"meetingId": meeting_id},
+                        UpdateExpression="REMOVE latestSummaryKey, caseCheckKey, casePassRate, caseFailedCount",
+                        ReturnValues="NONE"
+                    )
+                    helper.log_json("INFO", "CLEARED_OLD_METADATA", meetingId=meeting_id)
+
+                except Exception as e:
+                    helper.log_json("WARN", "FAILED_CLEANUP_OLD_FILES", meetingId=meeting_id, error=str(e))
 
             # Acquire transcript
             if transcript:
@@ -964,8 +1005,8 @@ def lambda_handler(event, context):
                     now = datetime.now(timezone.utc)
 
                     if ATHENA_PARTITIONED:
-                        # Use new Athena-partitioned format
-                        base = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}"
+                        # Save transcript to supplementary/ subdirectory
+                        base = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}"
                     else:
                         # Legacy format for backward compatibility
                         base = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}"
@@ -979,6 +1020,33 @@ def lambda_handler(event, context):
                 # STORE the fetched transcript to s3
                 transcript, _ = fetch_transcript_by_zoom_meeting_id(zoom_meeting_id)
                 source = "zoom_api"
+            elif force_reprocess:
+                # Force reprocess: fetch existing transcript from S3
+                helper.log_json("INFO", "FETCHING_EXISTING_TRANSCRIPT", meetingId=meeting_id)
+                set_status(meeting_id, "FETCH_TRANSCRIPT", {"source": "s3"})
+
+                # Try multiple locations for transcript
+                possible_paths = [
+                    f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year=2025/month=09/meeting_id={meeting_id}/transcript.txt",
+                    f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year=2025/month=10/meeting_id={meeting_id}/transcript.txt",
+                    f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year=2025/month=08/meeting_id={meeting_id}/transcript.txt",
+                    f"{S3_PREFIX}/version={SCHEMA_VERSION}/year=2025/month=09/meeting_id={meeting_id}/transcript.txt",
+                ]
+
+                transcript = None
+                for path in possible_paths:
+                    try:
+                        response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=path)
+                        transcript = response['Body'].read().decode('utf-8')
+                        helper.log_json("INFO", "TRANSCRIPT_FOUND", meetingId=meeting_id, path=path)
+                        break
+                    except:
+                        continue
+
+                if not transcript:
+                    raise ValueError(f"Force reprocess: Could not find existing transcript for meeting {meeting_id}")
+
+                source = "s3_existing"
             else:
                 raise ValueError("Provide either transcript text OR zoomMeetingId")
 
@@ -1097,7 +1165,18 @@ def lambda_handler(event, context):
             if enable_case_check:
                 helper.log_json("INFO", "CASE_CHECK_ENABLED", meetingId=meeting_id)
                 set_status(meeting_id, "CASE_CHECKING")
-                case_data, case_key = run_case_check(meeting_id, redacted_transcript)
+
+                # Extract year/month from summary key to ensure case check uses same partition
+                year, month = None, None
+                if ATHENA_PARTITIONED and latest_key:
+                    import re
+                    match = re.search(r'year=(\d+)/month=(\d+)', latest_key)
+                    if match:
+                        year = int(match.group(1))
+                        month = int(match.group(2))
+                        helper.log_json("INFO", "CASE_CHECK_PARTITION", meetingId=meeting_id, year=year, month=month)
+
+                case_data, case_key = run_case_check(meeting_id, redacted_transcript, year=year, month=month)
                 human_loop = start_case_review_if_needed(meeting_id, case_data, redacted_transcript)
             else:
                 helper.log_json("INFO", "CASE_CHECK_DISABLED", meetingId=meeting_id)

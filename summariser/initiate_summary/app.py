@@ -80,16 +80,22 @@ def lambda_handler(event, context):
     # Extract case checking option from request (optional)
     enable_case_check = bool(body.get("enableCaseCheck", False))
 
-    # 1) Fast path: job already completed?
-    if _job_completed(meeting_id):
+    # Extract force reprocess option from request (optional)
+    force_reprocess = bool(body.get("forceReprocess", False))
+
+    # 1) Fast path: job already completed? (skip if force reprocess enabled)
+    if not force_reprocess and _job_completed(meeting_id):
         logger.info(f"Summary already exists for meeting {meeting_id}")
         return _response(200, {"message": "Summary already exists", "meetingId": meeting_id})
+
+    if force_reprocess:
+        logger.info(f"Force reprocess enabled for meeting {meeting_id}")
 
     # 2) Mark QUEUED without clobbering COMPLETED
     _mark_queued(meeting_id)
 
     # 3) Push to SQS
-    _push_to_queue(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check)
+    _push_to_queue(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
 
     logger.info(f"Job queued successfully for meeting {meeting_id}")
     return _response(202, {"message": "Job queued successfully", "meetingId": meeting_id})
@@ -166,13 +172,14 @@ def _mark_queued(meeting_id: str) -> None:
                 correlation_id=meeting_id
             )
 
-def _push_to_queue(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False) -> None:
+def _push_to_queue(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> None:
     """Push job message to SQS queue"""
     msg = {
         "meetingId": meeting_id,
         "coachName": coach_name,
         "employerName": employer_name,
-        "enableCaseCheck": enable_case_check
+        "enableCaseCheck": enable_case_check,
+        "forceReprocess": force_reprocess
     }
 
     if transcript:

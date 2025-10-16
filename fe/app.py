@@ -2,9 +2,7 @@
 import os
 import time
 import json
-import math
 import html
-import re
 import requests
 import gradio as gr
 import pandas as pd
@@ -32,7 +30,7 @@ SUMMARIES_URL       = f"{API_BASE}/summaries"
 CASE_URL            = f"{API_BASE}/case"
 A2I_PORTAL_URL      = os.getenv("A2I_PORTAL_URL", "https://29cw9ax36n.labeling.eu-west-2.sagemaker.aws/")
 POLL_INTERVAL_SECS  = int(os.getenv("POLL_INTERVAL_SECS", "2"))
-POLL_TIMEOUT_SECS   = int(os.getenv("POLL_TIMEOUT_SECS", "180"))
+POLL_TIMEOUT_SECS   = int(os.getenv("POLL_TIMEOUT_SECS", "300"))  # Increased to 5 minutes to match Lambda timeout
 DEFAULT_PAGE_SIZE   = int(os.getenv("DEFAULT_PAGE_SIZE", "20"))
 S3_PREFIX           = os.getenv("S3_PREFIX", "summaries")  # e.g. 'summaries/v=1.1'
 
@@ -73,7 +71,7 @@ def _download_summary(download_url: str):
     except Exception:
         return r.text, None
 
-def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False) -> str:
+def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> str:
     meeting_id = (meeting_id or "").strip()
     coach_name = (coach_name or "").strip()
     employer_name = (employer_name or "").strip()
@@ -81,17 +79,19 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
     if not meeting_id:
         return json.dumps({"error": "Please provide Meeting ID (OM)."}, indent=2)
 
-    # 1) If exists and completed, just fetch it
-    status, err = _fetch_status(meeting_id)
-    if status and (status.get("status") or "").upper() == "COMPLETED":
-        url = status.get("downloadUrl")
-        if not url:
-            return json.dumps({"error": "Completed but no downloadUrl found."}, indent=2)
-        body, derr = _download_summary(url)
-        return body if derr is None else json.dumps({"error": derr}, indent=2)
+    # 1) If exists and completed, just fetch it (unless force_reprocess is enabled)
+    if not force_reprocess:
+        status, err = _fetch_status(meeting_id)
+        if status and (status.get("status") or "").upper() == "COMPLETED":
+            url = status.get("downloadUrl")
+            if not url:
+                return json.dumps({"error": "Completed but no downloadUrl found."}, indent=2)
+            body, derr = _download_summary(url)
+            return body if derr is None else json.dumps({"error": derr}, indent=2)
 
     # 2) Otherwise, (re)submit a job — coach name optional, but useful.
-    if not transcript and not zoom_meeting_id:
+    # Skip validation if force_reprocess (backend will fetch existing transcript)
+    if not force_reprocess and not transcript and not zoom_meeting_id:
         need = []
         if not transcript: need.append("Transcript")
         if not zoom_meeting_id: need.append("Zoom Meeting ID")
@@ -105,7 +105,11 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
     if enable_case_check:
         payload["enableCaseCheck"] = True
 
-    print(f"Submitting payload with case checking {'enabled' if enable_case_check else 'disabled'}: {json.dumps(payload)}")
+    # Add force reprocess option
+    if force_reprocess:
+        payload["forceReprocess"] = True
+
+    print(f"Submitting payload with case checking {'enabled' if enable_case_check else 'disabled'}, force reprocess {'enabled' if force_reprocess else 'disabled'}: {json.dumps(payload)}")
     if transcript and transcript.strip():
         payload["transcript"] = transcript.strip()
     else:
@@ -113,6 +117,21 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
 
     try:
         r = requests.post(SUMMARISE_URL, json=payload, timeout=15)
+        print(f"API Response: status={r.status_code}, body={r.text[:200]}")
+
+        # Check if response indicates already exists (when force reprocess should have prevented this)
+        if r.status_code == 200:
+            try:
+                response_body = r.json()
+                if "already exists" in response_body.get("message", "").lower():
+                    return json.dumps({
+                        "error": "Force reprocess failed - API returned 'already exists'",
+                        "details": "The Lambda may not have the force reprocess code deployed",
+                        "response": response_body
+                    }, indent=2)
+            except:
+                pass
+
         if r.status_code not in (200, 202):
             return json.dumps({"error": "Submit failed", "status": r.status_code, "body": r.text}, indent=2)
     except Exception as e:
@@ -120,15 +139,29 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
 
     # 3) Poll status
     start = time.time()
+    seen_processing = False  # Track if we've seen a non-COMPLETED status
+
     while time.time() - start < POLL_TIMEOUT_SECS:
         st, _ = _fetch_status(meeting_id)
-        if st and (st.get("status") or "").upper() == "COMPLETED":
+        current_status = (st.get("status") or "").upper() if st else ""
+
+        # If force reprocess, wait until we see PROCESSING status first
+        if force_reprocess and not seen_processing:
+            if current_status in ["PROCESSING", "QUEUED", "FETCH_TRANSCRIPT", "PII_REDACTION", "CASE_CHECKING"]:
+                seen_processing = True
+                print(f"Force reprocess: Detected processing started (status={current_status})")
+            elif current_status == "COMPLETED":
+                # Still waiting for processing to start, don't return old data yet
+                time.sleep(POLL_INTERVAL_SECS)
+                continue
+
+        if st and current_status == "COMPLETED":
             url = st.get("downloadUrl")
             if not url:
                 return json.dumps({"error": "No downloadUrl in status response."}, indent=2)
             body, derr = _download_summary(url)
             return body if derr is None else json.dumps({"error": derr}, indent=2)
-        if st and (st.get("status") or "").upper() == "FAILED":
+        if st and current_status == "FAILED":
             return json.dumps({"error": "Processing failed", "details": st.get("error")}, indent=2)
         time.sleep(POLL_INTERVAL_SECS)
 
@@ -197,9 +230,24 @@ def fetch_summaries_from_athena(version: str) -> dict:
         if not PYATHENA_OK or not ATHENA_S3_STAGING:
             return {"error": "Athena not configured. Set ATHENA_* env vars."}
 
-        # Query to fetch DISTINCT summaries data from Athena with actual pass rates from enhanced table
+        # Query to fetch deduplicated summaries data from Athena with latest record per meeting_id
         sql = f"""
-        SELECT DISTINCT
+        WITH ranked_summaries AS (
+            SELECT
+                meeting_id,
+                coach_name,
+                employer_name,
+                sentiment_label,
+                schema_version,
+                case_pass_rate,
+                case_failed_count,
+                actions,
+                sentiment_confidence,
+                ROW_NUMBER() OVER (PARTITION BY meeting_id ORDER BY case_pass_rate DESC NULLS LAST) as rn
+            FROM {ATHENA_DATABASE}.summaries
+            WHERE schema_version = '1.2'
+        )
+        SELECT
             meeting_id as meetingId,
             coach_name as coachName,
             employer_name as employerName,
@@ -223,8 +271,8 @@ def fetch_summaries_from_athena(version: str) -> dict:
             END as severityLevel,
             CAST(CASE WHEN case_pass_rate IS NOT NULL THEN true ELSE false END AS BOOLEAN) as caseCheckEnabled,
             CAST(NULL AS VARCHAR) as s3Key
-        FROM {ATHENA_DATABASE}.summaries
-        WHERE schema_version = '1.2'
+        FROM ranked_summaries
+        WHERE rn = 1
         LIMIT 1000
         """
 
@@ -422,24 +470,6 @@ def _sentiment_df(items: list) -> pd.DataFrame:
         counts[s] = counts.get(s, 0) + 1
     return pd.DataFrame({"sentiment": list(counts.keys()), "count": list(counts.values())})
 
-def _extract_versions(items: list) -> list[str]:
-    vs = sorted({it.get("prefixVersion") for it in items if it.get("prefixVersion")})
-    return vs
-
-def _simple_kpis():
-    """Get just the essential KPIs without complex tables"""
-    data = fetch_summaries_from_athena(S3_PREFIX)
-    if "error" in data:
-        return 0, "0.00", 0, 0
-
-    items = data.get("items", [])
-    total, avg_actions, _ = _kpis_from_items(items)
-
-    # Count escalation candidates and negative sentiment
-    escalations = sum(1 for item in items if _is_escalation_candidate(item))
-    negative_sentiment = sum(1 for item in items if (item.get("sentiment") or "").lower() == "negative")
-
-    return total, f"{avg_actions:.2f}", escalations, negative_sentiment
 
 def _is_escalation_candidate(item):
     """Check if an item is an escalation candidate based on various factors"""
@@ -662,48 +692,78 @@ def load_version_specific_analytics():
     """Load all analytics charts for a specific version"""
     version = "summaries/v=1.2"  # Only v1.2 supported
     try:
+        print(f"[Dashboard] Loading analytics for version {version}...")
         data = fetch_summaries_from_athena(version)
         if "error" in data:
+            print(f"[Dashboard] ERROR: {data['error']}")
             empty_fig = _create_empty_bar_chart(f"Error loading data for version {version}")
             empty_pie = _create_empty_pie_chart(f"Error loading data for version {version}")
             return empty_fig, empty_pie, empty_fig, empty_fig
 
         raw_items = data.get("items", [])
+        print(f"[Dashboard] Fetched {len(raw_items)} raw items")
+
         # Filter to only include complete records
         items = _filter_complete_records(raw_items, version)
+        print(f"[Dashboard] {len(items)} items after filtering")
 
         if not items:
+            print(f"[Dashboard] NO ITEMS after filtering - returning empty charts")
             empty_fig = _create_empty_bar_chart(f"No complete data available for version {version}")
             empty_pie = _create_empty_pie_chart(f"No complete data available for version {version}")
             return empty_fig, empty_pie, empty_fig, empty_fig
 
         # Coach Performance Chart
         try:
+            print("[Dashboard] Creating coach performance chart...")
             coach_performance_fig = _create_coach_performance_chart(items, version)
-        except Exception:
+            print("[Dashboard] ✓ Coach performance chart created")
+        except Exception as e:
+            print(f"[Dashboard] ✗ Coach performance chart failed: {e}")
+            import traceback
+            traceback.print_exc()
             coach_performance_fig = _create_empty_bar_chart(f"Coach Performance - Version {version} (No Data)")
 
         # Sentiment Analysis Chart
         try:
+            print("[Dashboard] Creating sentiment chart...")
             sentiment_fig = _create_sentiment_chart(items, version)
-        except Exception:
+            print("[Dashboard] ✓ Sentiment chart created")
+        except Exception as e:
+            print(f"[Dashboard] ✗ Sentiment chart failed: {e}")
+            import traceback
+            traceback.print_exc()
             sentiment_fig = _create_empty_pie_chart(f"Sentiment Distribution - Version {version} (No Data)")
 
         # Theme Trends Chart
         try:
+            print("[Dashboard] Creating themes chart...")
             themes_fig = load_themes_from_api()
-        except Exception:
+            print("[Dashboard] ✓ Themes chart created")
+        except Exception as e:
+            print(f"[Dashboard] ✗ Themes chart failed: {e}")
+            import traceback
+            traceback.print_exc()
             themes_fig = _create_empty_bar_chart(f"Top Discussion Themes - Version {version} (No Data)")
 
         # Risk & Vulnerability Chart
         try:
+            print("[Dashboard] Creating risk chart...")
             risk_fig = _create_risk_chart(items, version)
-        except Exception:
+            print("[Dashboard] ✓ Risk chart created")
+        except Exception as e:
+            print(f"[Dashboard] ✗ Risk chart failed: {e}")
+            import traceback
+            traceback.print_exc()
             risk_fig = _create_empty_bar_chart(f"Risk & Vulnerability Assessment - Version {version} (No Data)")
 
+        print("[Dashboard] All charts created successfully")
         return coach_performance_fig, sentiment_fig, themes_fig, risk_fig
 
     except Exception as e:
+        print(f"[Dashboard] CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         error_fig = _create_empty_bar_chart(f"Error: {str(e)[:50]}")
         error_pie = _create_empty_pie_chart(f"Error: {str(e)[:50]}")
         return error_fig, error_pie, error_fig, error_fig
@@ -1074,14 +1134,14 @@ def render_escalation_table(items: list) -> str:
       <tbody>{''.join(rows)}</tbody>
     </table>"""
 
-def refresh_all(page, page_size, version):
-    version = (version or S3_PREFIX)
-    data = fetch_summaries_from_athena(version)
+def refresh_all(page, page_size):
+    # Always use v1.2 data
+    data = fetch_summaries_from_athena("summaries/v=1.2")
     if "error" in data:
         banner = f"""<div style="padding:10px;border:1px solid #f0c36d;background:#fff8e1;border-radius:8px">
         <strong>Couldn’t load summaries.</strong><br/>{html.escape(str(data.get('error')))} (status: {html.escape(str(data.get('status','n/a')))})
         </div>"""
-        return [], 1, banner, json.dumps(data, indent=2), "Page 1 of 1 (0 items)", 0, "0.00", "0.0%", gr.update(value=None), gr.update(choices=[S3_PREFIX, "all"], value=version)
+        return [], 1, banner, json.dumps(data, indent=2), "Page 1 of 1 (0 items)", 0, "0.00", "0.0%", None, None
 
     items = data.get("items", [])
     total, avg_actions, avg_pass = _kpis_from_items(items)
@@ -1093,11 +1153,6 @@ def refresh_all(page, page_size, version):
     if not sdf.empty:
         fig = px.bar(sdf, x="sentiment", y="count", title="Meetings by Sentiment")
 
-    versions = _extract_versions(items)
-    if "all" not in versions:
-        versions = versions + ["all"] if versions else [S3_PREFIX, "all"]
-    if version not in versions:
-        versions = [version] + [v for v in versions if v != version]
 
     return (
         items,
@@ -1108,8 +1163,8 @@ def refresh_all(page, page_size, version):
         total_count,
         f"{avg_actions:.2f}",
         f"{avg_pass*100:.1f}%",
-        gr.update(value=fig),
-        gr.update(choices=versions, value=version),
+        fig,
+        None,
     )
 
 def get_case_for_meeting(meeting_id: str) -> str:
@@ -1195,8 +1250,6 @@ def run_df(sql: str) -> pd.DataFrame:
     with _athena_conn() as conn:
         return pd.read_sql_query(sql, conn)
 
-# Sanitise version literal to avoid SQL injection
-_VER_SAFE = re.compile(r"^[A-Za-z0-9/_=\.\-]+$")
 
 
 # Base queries (assume views expose 'version'; we’ll try filtered first, then fallback)
@@ -1274,29 +1327,6 @@ ORDER BY avg_quality_score DESC
 """
 
 
-def _try_versioned_sql(sql_filtered: str, sql_unfiltered: str, version: str):
-    sql_f = sql_filtered.format(db=ATHENA_DATABASE, ver="1.2")
-    sql_u = sql_unfiltered.format(db=ATHENA_DATABASE)
-    try:
-        df = run_df(sql_f)
-        info = f"Filtered by version: `{version}`"
-        return df, info
-    except Exception as e:
-        # Skip broken tables with JSON errors
-        if "HIVE_CURSOR_ERROR" in str(e) or "JSONException" in str(e):
-            print(f"⚠️  Skipping broken table due to JSON error")
-            return pd.DataFrame(), "Table unavailable due to JSON formatting issues"
-
-        # Fallback when views don't yet expose `version`
-        try:
-            df = run_df(sql_u)
-            info = "Showing all versions (your Athena views likely lack a `version` column)."
-            return df, info
-        except Exception as e2:
-            if "HIVE_CURSOR_ERROR" in str(e2) or "JSONException" in str(e2):
-                print(f"⚠️  Both tables broken due to JSON error")
-                return pd.DataFrame(), "Table unavailable due to JSON formatting issues"
-            raise
 
 def load_overview():
     try:
@@ -1551,16 +1581,19 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
 
         with gr.Row():
             enable_case_check = gr.Checkbox(label="Enable Case Checking", value=False, info="Run AI case quality analysis (requires A2I flow)")
+            force_reprocess = gr.Checkbox(label="Force Reprocess", value=False, info="⚠️ Overwrite existing summary and case check data")
 
         case_check_warning = gr.Markdown(f"⚠️ **Note:** Case checking enabled - will add additional processing time and requires human review. [Access A2I Portal]({A2I_PORTAL_URL}) to review case checks.", visible=False)
+        force_reprocess_warning = gr.Markdown("⚠️ **Warning:** Force reprocess will overwrite any existing summary and case check data for this meeting. This action cannot be undone.", visible=False)
 
         run_btn         = gr.Button("Generate Summary")
 
         result_json     = gr.Code(label="Summary JSON", language="json", value="")
 
         # Interactions
-        run_btn.click(submit_and_get_json, inputs=[meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check], outputs=[result_json])
+        run_btn.click(submit_and_get_json, inputs=[meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess], outputs=[result_json])
         enable_case_check.change(lambda x: gr.update(visible=x), inputs=[enable_case_check], outputs=[case_check_warning])
+        force_reprocess.change(lambda x: gr.update(visible=x), inputs=[force_reprocess], outputs=[force_reprocess_warning])
 
         # Inspect existing meetings section
         gr.Markdown("---")
