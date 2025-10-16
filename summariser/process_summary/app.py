@@ -40,7 +40,11 @@ JOB_TABLE_REF = dynamodb.Table(SUMMARY_JOB_TABLE)
 # ---------- LLM response (summary) ----------
 class ActionItem(BaseModel):
     description: str
-    
+
+class SentimentAnalysis(BaseModel):
+    label: str
+    confidence: float
+
 class ThemeItem(BaseModel):
     id: str
     label: str
@@ -52,7 +56,7 @@ class ClaudeResponse(BaseModel):
     summary: str
     key_points: List[str]
     action_items: List[ActionItem]
-    sentiment_analysis: str
+    sentiment_analysis: SentimentAnalysis
     themes: List[ThemeItem] = Field(default_factory=list)
 
 # ---------- Case check models ----------
@@ -598,7 +602,7 @@ def _calculate_quality_score(data: ClaudeResponse, actions: list, themes: list) 
         score += points_score * 0.15
 
     # Sentiment analysis presence (10% weight)
-    if data.sentiment_analysis and data.sentiment_analysis.strip():
+    if data.sentiment_analysis and data.sentiment_analysis.label and data.sentiment_analysis.label.strip():
         score += 0.1
 
     return min(1.0, max(0.0, score))  # clamp to [0.0, 1.0]
@@ -608,10 +612,11 @@ def _build_summary_payload(meeting_id: str, coach_name:str, employer_name:str, s
     """Schema 1.1 envelope + decision-ready metadata, driven by env versions."""
     now_iso = datetime.now(timezone.utc).isoformat() + "Z"
     sentiment_label = (
-        data.sentiment_analysis
-        if data.sentiment_analysis in ("Positive", "Neutral", "Negative")
+        data.sentiment_analysis.label
+        if data.sentiment_analysis.label in ("Positive", "Neutral", "Negative")
         else "Neutral"
     )
+    sentiment_confidence = max(0.0, min(1.0, float(data.sentiment_analysis.confidence)))
     actions = [
         {
             "id": f"A{i+1}",
@@ -624,7 +629,7 @@ def _build_summary_payload(meeting_id: str, coach_name:str, employer_name:str, s
             "id": t.id,
             "label": t.label,
             "group": t.group or "General",  # Ensure group is never None
-            "confidence": float(t.confidence),
+            "confidence": max(0.0, min(1.0, float(t.confidence))),  # Clamp to [0,1]
             "evidence_quote": t.evidence_quote or ""
         }
         for t in (data.themes or [])
@@ -645,7 +650,7 @@ def _build_summary_payload(meeting_id: str, coach_name:str, employer_name:str, s
         },
         "sentiment": {
             "label": sentiment_label,
-            "confidence": 0.75,
+            "confidence": sentiment_confidence,
             "evidence_spans": [],
         },
         "themes": themes,
@@ -918,11 +923,11 @@ def run_case_check(meeting_id: str, cleaned_transcript: str, year: int = None, m
     for r in data.get("results", []):
         r["evidence_quote"] = r.get("evidence_quote") or ""
         r["comment"] = r.get("comment") or ""
-        # (optional) clamp confidence to [0,1]
-        # try:
-        #     r["confidence"] = max(0.0, min(1.0, float(r.get("confidence", 0.0))))
-        # except Exception:
-        #     r["confidence"] = 0.0
+        # Clamp confidence to [0,1] scale
+        try:
+            r["confidence"] = max(0.0, min(1.0, float(r.get("confidence", 0.0))))
+        except Exception:
+            r["confidence"] = 0.0
 
     key = _save_case_json(meeting_id, data, year=year, month=month)
     return (data, key)

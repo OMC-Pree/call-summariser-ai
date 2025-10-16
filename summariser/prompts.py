@@ -18,9 +18,12 @@ The JSON must follow this format exactly:
   "summary": string,
   "key_points": [string],
   "action_items": [ { "description": string } ],
-  "sentiment_analysis": "Positive" | "Neutral" | "Negative",
+  "sentiment_analysis": {
+    "label": "Positive" | "Neutral" | "Negative",
+    "confidence": number (0-1)
+  },
   "themes": [
-     { "id": string, "label": string, "group": string, "confidence": number, "evidence_quote": string | null }
+     { "id": string, "label": string, "group": string, "confidence": number (0-1), "evidence_quote": string | null }
   ]
 }
 Rules:
@@ -45,7 +48,7 @@ Schema:
   "model_version": string,
   "prompt_version": string,
   "results": [
-    {{"id": string, "status": "Pass" | "Fail" | "NotApplicable" | "Inconclusive", "confidence": number, "evidence_spans": [[start,end]], "evidence_quote": string, "comment": string}}
+    {{"id": string, "status": "Pass" | "Fail" | "NotApplicable" | "Inconclusive", "confidence": number (0-1), "evidence_spans": [[start,end]], "evidence_quote": string, "comment": string}}
   ],
   "overall": {{"pass_rate": number, "failed_ids": [string], "high_severity_flags": [string]}}
 }}
