@@ -126,8 +126,8 @@
               },
               "ResultPath": "$.summaryResult",
               "ResultSelector": {
-                "summary.$": "$.Payload.summary",
-                "rawResponse.$": "$.Payload.rawResponse"
+                "summaryS3Key.$": "$.Payload.summaryS3Key",
+                "rawResponseS3Key.$": "$.Payload.rawResponseS3Key"
               },
               "Retry": [
                 {
@@ -156,7 +156,7 @@
               "Type": "Pass",
               "Comment": "Summary generation failed, return minimal valid data",
               "Result": {
-                "validatedData": null,
+                "validatedDataS3Key": null,
                 "isValid": false,
                 "error": "Summary generation failed"
               },
@@ -169,14 +169,14 @@
               "Parameters": {
                 "FunctionName": "${ValidateRepairFunctionArn}",
                 "Payload": {
-                  "rawResponse.$": "$.summaryResult.rawResponse",
+                  "rawResponseS3Key.$": "$.summaryResult.rawResponseS3Key",
                   "meetingId.$": "$.meetingId",
                   "validationType": "summary"
                 }
               },
               "ResultPath": "$",
               "ResultSelector": {
-                "validatedData.$": "$.Payload.validatedData",
+                "validatedDataS3Key.$": "$.Payload.validatedDataS3Key",
                 "isValid.$": "$.Payload.isValid"
               },
               "Retry": [
@@ -266,12 +266,11 @@
         "employerName.$": "$.employerName",
         "source.$": "$.source",
         "forceReprocess.$": "$$.Execution.Input.forceReprocess",
-        "validatedSummary.$": "$.parallelResults[0].validatedData",
+        "validatedSummaryS3Key.$": "$.parallelResults[0].validatedDataS3Key",
         "caseCheckResult": {
           "caseKey.$": "$.parallelResults[1].caseKey",
           "passRate.$": "$.parallelResults[1].passRate"
-        },
-        "redactedTranscriptKey.$": "$.redactedTranscriptKey"
+        }
       },
       "ResultPath": "$",
       "Next": "PersistSummary"
@@ -287,7 +286,7 @@
           "employerName.$": "$.employerName",
           "source.$": "$.source",
           "forceReprocess.$": "$.forceReprocess",
-          "validatedSummary.$": "$.validatedSummary",
+          "validatedSummaryS3Key.$": "$.validatedSummaryS3Key",
           "caseCheckResult.$": "$.caseCheckResult"
         }
       },
