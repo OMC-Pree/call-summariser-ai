@@ -95,8 +95,8 @@ def lambda_handler(event, context):
     if force_reprocess:
         logger.info(f"Force reprocess enabled for meeting {meeting_id}")
 
-    # 2) Mark QUEUED without clobbering COMPLETED
-    _mark_queued(meeting_id)
+    # 2) Mark QUEUED (allow overwriting COMPLETED if force_reprocess)
+    _mark_queued(meeting_id, force=force_reprocess)
 
     # 3) Start Step Functions execution (if enabled) or fallback to SQS
     if STATE_MACHINE_ARN:
@@ -147,8 +147,14 @@ def _check_s3_completion(meeting_id: str) -> bool:
         handle_s3_error(e, SUMMARY_BUCKET, correlation_id=meeting_id)
         return False
 
-def _mark_queued(meeting_id: str) -> None:
-    """Mark meeting as queued in DynamoDB"""
+def _mark_queued(meeting_id: str, force: bool = False) -> None:
+    """
+    Mark meeting as queued in DynamoDB.
+
+    Args:
+        meeting_id: The meeting identifier
+        force: If True, overwrite even if status is COMPLETED (for force reprocess)
+    """
     item = {
         "meetingId": meeting_id,
         "status": "QUEUED",
@@ -157,17 +163,23 @@ def _mark_queued(meeting_id: str) -> None:
     }
 
     if os.environ.get("AWS_SAM_LOCAL") == "true":
-        logger.info(f"🧪 [Mock] Would set QUEUED for {meeting_id}")
+        logger.info(f"🧪 [Mock] Would set QUEUED for {meeting_id} (force={force})")
         return
 
     try:
-        dynamodb_wrapper.put_item(
-            Item=item,
-            ConditionExpression="attribute_not_exists(#s) OR #s <> :done",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":done": "COMPLETED"},
-        )
-        logger.info(f"Marked meeting {meeting_id} as QUEUED")
+        if force:
+            # Force reprocess: unconditionally overwrite the status
+            dynamodb_wrapper.put_item(Item=item)
+            logger.info(f"Marked meeting {meeting_id} as QUEUED (force overwrite)")
+        else:
+            # Normal path: don't clobber COMPLETED status
+            dynamodb_wrapper.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(#s) OR #s <> :done",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":done": "COMPLETED"},
+            )
+            logger.info(f"Marked meeting {meeting_id} as QUEUED")
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
         if error_code == "ConditionalCheckFailedException":

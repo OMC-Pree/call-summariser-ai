@@ -135,17 +135,25 @@ def _summary_object_keys(meeting_id: str) -> tuple:
     return run_key, latest_key
 
 
-def _save_summary_json(meeting_id: str, payload: dict) -> tuple:
-    """Save summary to S3 and return (run_key, latest_key)"""
+def _save_summary_json(meeting_id: str, payload: dict, force: bool = False) -> tuple:
+    """
+    Save summary to S3 and return (run_key, latest_key).
+
+    Args:
+        meeting_id: The meeting identifier
+        payload: The summary data to save
+        force: If True, overwrite existing summary (for force reprocess)
+    """
     run_key, latest_key = _summary_object_keys(meeting_id)
 
-    # Check if summary already exists
-    try:
-        s3.head_object(Bucket=SUMMARY_BUCKET, Key=latest_key)
-        helper.log_json("INFO", "SUMMARY_EXISTS", meetingId=meeting_id)
-        return run_key, latest_key
-    except Exception:
-        pass
+    # Check if summary already exists (skip check if force=True)
+    if not force:
+        try:
+            s3.head_object(Bucket=SUMMARY_BUCKET, Key=latest_key)
+            helper.log_json("INFO", "SUMMARY_EXISTS", meetingId=meeting_id)
+            return run_key, latest_key
+        except Exception:
+            pass
 
     body = json.dumps(payload).encode("utf-8")
 
@@ -158,7 +166,10 @@ def _save_summary_json(meeting_id: str, payload: dict) -> tuple:
         CacheControl="no-store",
     )
 
-    helper.log_json("INFO", "SUMMARY_SAVED", meetingId=meeting_id, key=latest_key)
+    if force:
+        helper.log_json("INFO", "SUMMARY_OVERWRITTEN", meetingId=meeting_id, key=latest_key, force=True)
+    else:
+        helper.log_json("INFO", "SUMMARY_SAVED", meetingId=meeting_id, key=latest_key)
 
     return latest_key, latest_key
 
@@ -175,6 +186,7 @@ def lambda_handler(event, context):
         - source: str
         - validatedSummary: dict
         - caseCheckResult: dict (optional)
+        - forceReprocess: bool (optional, default False)
 
     Output:
         - summaryKey: str
@@ -186,12 +198,16 @@ def lambda_handler(event, context):
     employer_name = event.get("employerName", "")
     source = event.get("source")
     validated_summary = event.get("validatedSummary")
+    force_reprocess = bool(event.get("forceReprocess", False))
 
     if not meeting_id:
         raise ValidationError("meetingId is required")
 
     if not validated_summary:
         raise ValidationError("validatedSummary is required")
+
+    if force_reprocess:
+        helper.log_json("INFO", "FORCE_REPROCESS_PERSIST", meetingId=meeting_id, coachName=coach_name)
 
     # Build payload
     payload = _build_summary_payload(
@@ -202,8 +218,8 @@ def lambda_handler(event, context):
         data=validated_summary
     )
 
-    # Save to S3
-    run_key, latest_key = _save_summary_json(meeting_id, payload)
+    # Save to S3 (force overwrite if force_reprocess=True)
+    run_key, latest_key = _save_summary_json(meeting_id, payload, force=force_reprocess)
 
     # Extract metadata for DynamoDB
     metadata = {

@@ -10,6 +10,7 @@
         "Payload": {
           "meetingId.$": "$.meetingId",
           "status": "PROCESSING",
+          "force.$": "$.forceReprocess",
           "metadata": {}
         }
       },
@@ -239,6 +240,7 @@
         "coachName.$": "$.coachName",
         "employerName.$": "$.employerName",
         "source.$": "$.source",
+        "forceReprocess.$": "$$.Execution.Input.forceReprocess",
         "validatedSummary.$": "$.parallelResults[0].validatedData",
         "caseCheckResult": {
           "caseKey.$": "$.parallelResults[1].caseKey",
@@ -259,6 +261,7 @@
           "coachName.$": "$.coachName",
           "employerName.$": "$.employerName",
           "source.$": "$.source",
+          "forceReprocess.$": "$.forceReprocess",
           "validatedSummary.$": "$.validatedSummary",
           "caseCheckResult.$": "$.caseCheckResult"
         }
