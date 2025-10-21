@@ -143,7 +143,25 @@
                   "BackoffRate": 1.5
                 }
               ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "HandleSummaryFailure"
+                }
+              ],
               "Next": "ValidateRepairSummary"
+            },
+            "HandleSummaryFailure": {
+              "Type": "Pass",
+              "Comment": "Summary generation failed, return minimal valid data",
+              "Result": {
+                "validatedData": null,
+                "isValid": false,
+                "error": "Summary generation failed"
+              },
+              "ResultPath": "$",
+              "End": true
             },
             "ValidateRepairSummary": {
               "Type": "Task",
@@ -214,6 +232,13 @@
                   "IntervalSeconds": 3,
                   "MaxAttempts": 2,
                   "BackoffRate": 1.5
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.caseCheckError",
+                  "Next": "SkipCaseCheck"
                 }
               ],
               "End": true

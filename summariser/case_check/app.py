@@ -337,6 +337,7 @@ def lambda_handler(event, context):
 
     # Process each chunk
     chunk_results = []
+    truncated_chunks = []
     for idx, chunk in enumerate(chunks):
         helper.log_json("INFO", f"PROCESSING_CHUNK_{idx + 1}_OF_{num_chunks}",
                        meetingId=meeting_id,
@@ -348,7 +349,7 @@ def lambda_handler(event, context):
         # Call Bedrock for this chunk
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 6000,
+            "max_tokens": 8000,
             "temperature": 0.2,
             "system": CASE_CHECK_SYSTEM_MESSAGE,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
@@ -361,11 +362,12 @@ def lambda_handler(event, context):
         # Check if response was truncated
         stop_reason = payload.get("stop_reason")
         if stop_reason == "max_tokens":
-            helper.log_json("ERROR", "CHUNK_CASECHECK_TRUNCATED",
+            truncated_chunks.append(idx + 1)
+            helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
                            meetingId=meeting_id,
                            chunk_idx=idx + 1,
-                           message="Chunk response hit max_tokens - chunk may still be too large")
-            raise ValueError(f"Case check chunk {idx + 1} truncated for meeting {meeting_id}")
+                           message="Chunk response hit max_tokens - using partial results")
+            # Continue with partial results instead of failing
 
         helper.log_json("INFO", f"CHUNK_{idx + 1}_LLM_OK",
                        meetingId=meeting_id,
@@ -402,6 +404,17 @@ def lambda_handler(event, context):
     data["meeting_id"] = meeting_id
     data["model_version"] = MODEL_VERSION
     data["prompt_version"] = PROMPT_VERSION
+
+    # Add truncation metadata if any chunks were truncated
+    if truncated_chunks:
+        if "overall" not in data:
+            data["overall"] = {}
+        data["overall"]["truncated_chunks"] = truncated_chunks
+        data["overall"]["has_truncation"] = True
+        helper.log_json("WARNING", "CASE_CHECK_HAD_TRUNCATION",
+                       meetingId=meeting_id,
+                       truncated_chunks=truncated_chunks,
+                       message="Some chunks were truncated - results may be incomplete")
 
     severity_by_id = {c["id"]: c.get("severity", "low") for c in STARTER_SESSION_CHECKS}
     has_high_severity_failures = False

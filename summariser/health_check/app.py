@@ -130,51 +130,6 @@ class HealthChecker:
                 error=str(e)
             )
 
-    def check_sqs(self) -> None:
-        """Check SQS queue connectivity and attributes"""
-        start = time.time()
-        try:
-            sqs = boto3.client('sqs')
-
-            # Get queue attributes
-            response = sqs.get_queue_attributes(
-                QueueUrl=os.environ.get("SUMMARY_JOBS_QUEUE", ""),
-                AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
-            )
-
-            response_time = (time.time() - start) * 1000
-            attributes = response.get('Attributes', {})
-
-            visible_messages = int(attributes.get('ApproximateNumberOfMessages', 0))
-            processing_messages = int(attributes.get('ApproximateNumberOfMessagesNotVisible', 0))
-
-            # Determine health based on queue backlog
-            if visible_messages < 10:
-                status = 'healthy'
-            elif visible_messages < 50:
-                status = 'degraded'
-            else:
-                status = 'unhealthy'
-
-            self.add_check(
-                'sqs',
-                status,
-                response_time,
-                details={
-                    'visible_messages': visible_messages,
-                    'processing_messages': processing_messages,
-                    'queue_url': os.environ.get("SUMMARY_JOBS_QUEUE", "")
-                }
-            )
-
-        except Exception as e:
-            response_time = (time.time() - start) * 1000
-            self.add_check(
-                'sqs',
-                'unhealthy',
-                response_time,
-                error=str(e)
-            )
 
     def check_bedrock(self) -> None:
         """Check Bedrock model availability"""
@@ -231,7 +186,6 @@ class HealthChecker:
         required_env_vars = [
             'SUMMARY_BUCKET',
             'SUMMARY_JOB_TABLE',
-            'SUMMARY_JOBS_QUEUE',
             'MODEL_VERSION',
             'SUMMARY_SCHEMA_VERSION'
         ]
@@ -268,7 +222,6 @@ class HealthChecker:
         self.check_environment()
         self.check_dynamodb()
         self.check_s3()
-        self.check_sqs()
 
         # Skip Bedrock check in development to avoid costs
         if os.environ.get("AWS_SAM_LOCAL") != "true":

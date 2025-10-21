@@ -45,8 +45,6 @@ Resources:
     Properties:
       Name: call-summariser-events
 
-  SummaryJobsDLQ:
-    Type: AWS::SQS::Queue
 
   ### S3 Bucket for Summaries ###
   SummaryBucket:
@@ -114,14 +112,6 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
-  ### SQS Queue ###
-  SummaryJobsQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      VisibilityTimeout: 330 # > Lambda timeout (300s)
-      RedrivePolicy:
-        deadLetterTargetArn: !GetAtt SummaryJobsDLQ.Arn
-        maxReceiveCount: 5
 
   ### Step Functions State Machine ###
   SummariserStateMachine:
@@ -372,14 +362,11 @@ Resources:
       Environment:
         Variables:
           SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOBS_QUEUE: !Ref SummaryJobsQueue
           SUMMARY_JOB_TABLE: !Ref SummaryJobTable
           STATE_MACHINE_ARN: !Ref SummariserStateMachine
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref SummaryBucket
-        - SQSSendMessagePolicy:
-            QueueName: !GetAtt SummaryJobsQueue.QueueName
         - DynamoDBCrudPolicy:
             TableName: !Ref SummaryJobTable
         - Statement:
@@ -388,55 +375,6 @@ Resources:
                 - states:StartExecution
               Resource: !Ref SummariserStateMachine
 
-  ### Process Lambda (Triggered by SQS) ###
-  ProcessSummaryFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Timeout: 300
-      MemorySize: 1024
-      CodeUri: summariser/
-      Runtime: python3.11
-      Layers:
-        - !Ref SharedDependenciesLayer
-      Handler: process_summary.app.lambda_handler
-      Events:
-        SQSTrigger:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt SummaryJobsQueue.Arn
-            BatchSize: 1
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
-          ZOOM_PARAM_PREFIX: /zoom/s2s
-      Policies:
-        # Limit S3 to the summaries bucket (Get/Put covered here)
-        - S3CrudPolicy:
-            BucketName: !Ref SummaryBucket
-        - DynamoDBCrudPolicy:
-            TableName: !Ref SummaryJobTable
-        - Statement:
-            - Effect: Allow
-              Action:
-                - bedrock:InvokeModel
-              Resource:
-                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
-            - Effect: Allow
-              Action:
-                - comprehend:DetectPiiEntities
-              Resource: "*"
-            - Effect: Allow
-              Action:
-                - ssm:GetParameter
-                - ssm:PutParameter
-              Resource:
-                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/zoom/s2s/*
-            - Effect: Allow
-              Action:
-                - sagemaker:StartHumanLoop
-                - sagemaker:DescribeHumanLoop
-              Resource: "*" # can be narrowed to your flow later
 
   ### Get Summary URL Lambda (returns signed URL for summary) ###
   GetSummaryUrlFunction:
@@ -544,6 +482,41 @@ Resources:
               Action:
                 - sagemaker:DescribeHumanLoop
               Resource: "*"
+
+  ### Health Check Endpoint ###
+  HealthCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: health_check.app.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: get
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+          MODEL_VERSION: !Ref AWS::StackName
+          SUMMARY_SCHEMA_VERSION: "1.2"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummaryJobTable
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
 
   # GradioDashboardFunction:
   #   Type: AWS::Serverless::Function

@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 # AWS clients with retry wrappers
 s3 = boto3.client("s3")
-sqs = boto3.client("sqs")
 sfn = boto3.client("stepfunctions")
 
 # DynamoDB with retry wrapper
@@ -98,16 +97,10 @@ def lambda_handler(event, context):
     # 2) Mark QUEUED (allow overwriting COMPLETED if force_reprocess)
     _mark_queued(meeting_id, force=force_reprocess)
 
-    # 3) Start Step Functions execution (if enabled) or fallback to SQS
-    if STATE_MACHINE_ARN:
-        execution_arn = _start_step_function(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
-        logger.info(f"Step Functions execution started for meeting {meeting_id}: {execution_arn}")
-        return _response(202, {"message": "Workflow started", "meetingId": meeting_id, "executionArn": execution_arn})
-    else:
-        # Fallback to legacy SQS queue
-        _push_to_queue(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
-        logger.info(f"Job queued successfully for meeting {meeting_id}")
-        return _response(202, {"message": "Job queued successfully", "meetingId": meeting_id})
+    # 3) Start Step Functions execution
+    execution_arn = _start_step_function(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
+    logger.info(f"Step Functions execution started for meeting {meeting_id}: {execution_arn}")
+    return _response(202, {"message": "Workflow started", "meetingId": meeting_id, "executionArn": execution_arn})
 
 # ---------- Helpers ----------
 
@@ -229,49 +222,6 @@ def _start_step_function(meeting_id: str, coach_name: str, employer_name: str, t
             correlation_id=meeting_id
         )
 
-def _push_to_queue(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> None:
-    """Push job message to SQS queue"""
-    msg = {
-        "meetingId": meeting_id,
-        "coachName": coach_name,
-        "employerName": employer_name,
-        "enableCaseCheck": enable_case_check,
-        "forceReprocess": force_reprocess
-    }
-
-    if transcript:
-        msg["transcript"] = transcript
-    else:
-        msg["zoomMeetingId"] = zoom_meeting_id
-
-    if os.environ.get("AWS_SAM_LOCAL") == "true":
-        logger.info("🧪 [Mock] Would push message to SQS queue")
-        logger.debug(f"Message content: {json.dumps(msg, indent=2)}")
-        return
-
-    try:
-        response = sqs.send_message(
-            QueueUrl=os.environ["SUMMARY_JOBS_QUEUE"],
-            MessageBody=json.dumps(msg),
-            MessageAttributes={
-                'MeetingId': {
-                    'StringValue': meeting_id,
-                    'DataType': 'String'
-                },
-                'MessageType': {
-                    'StringValue': 'SummaryRequest',
-                    'DataType': 'String'
-                }
-            }
-        )
-        logger.info(f"Message sent to SQS for meeting {meeting_id}, MessageId: {response.get('MessageId')}")
-
-    except Exception as e:
-        raise ExternalServiceError(
-            f"Failed to send message to SQS: {e}",
-            service="sqs",
-            correlation_id=meeting_id
-        )
 
 def _response(status_code: int, body: dict):
     return {
