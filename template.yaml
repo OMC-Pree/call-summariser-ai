@@ -16,10 +16,12 @@ Globals:
         SUMMARY_SCHEMA_VERSION: "1.2"
         ATHENA_PARTITIONED: "true"
         MODEL_VERSION: "bedrock:claude-3-sonnet-20240229"
+        MODEL_ID: "anthropic.claude-3-sonnet-20240229-v1:0"
         PROMPT_VERSION: "2025-09-22-a"
         INSIGHTS_VERSION: "2025-08-30-a"
         CASE_CHECK_SCHEMA_VERSION: "1.0"
         SAVE_TRANSCRIPTS: "true"
+        ZOOM_PARAM_PREFIX: "/zoom/s2s"
         # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
         A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
         A2I_PORTAL_URL: ""
@@ -36,6 +38,12 @@ Resources:
         - python3.11
     Metadata:
       BuildMethod: python3.11
+
+  ### EventBridge Event Bus ###
+  SummariserEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: call-summariser-events
 
   SummaryJobsDLQ:
     Type: AWS::SQS::Queue
@@ -115,6 +123,237 @@ Resources:
         deadLetterTargetArn: !GetAtt SummaryJobsDLQ.Arn
         maxReceiveCount: 5
 
+  ### Step Functions State Machine ###
+  SummariserStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: call-summariser-workflow
+      DefinitionUri: statemachine/summariser-workflow.asl.json
+      DefinitionSubstitutions:
+        FetchTranscriptFunctionArn: !GetAtt FetchTranscriptFunction.Arn
+        NormaliseRolesFunctionArn: !GetAtt NormaliseRolesFunction.Arn
+        PIIDetectRedactFunctionArn: !GetAtt PIIDetectRedactFunction.Arn
+        SummariseFunctionArn: !GetAtt SummariseFunction.Arn
+        ValidateRepairFunctionArn: !GetAtt ValidateRepairFunction.Arn
+        CaseCheckFunctionArn: !GetAtt CaseCheckFunction.Arn
+        PersistSummaryFunctionArn: !GetAtt PersistSummaryFunction.Arn
+        A2IReviewFunctionArn: !GetAtt A2IReviewFunction.Arn
+        UpdateStatusFunctionArn: !GetAtt UpdateStatusFunction.Arn
+        EventBusName: !Ref SummariserEventBus
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FetchTranscriptFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NormaliseRolesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PIIDetectRedactFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SummariseFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateRepairFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CaseCheckFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PersistSummaryFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref A2IReviewFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateStatusFunction
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref SummariserEventBus
+
+  ### Step Functions Workflow Lambda Functions ###
+  FetchTranscriptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: fetch_transcript.app.lambda_handler
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:PutParameter
+              Resource:
+                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/zoom/s2s/*
+
+  NormaliseRolesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: normalise_roles.app.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+
+  PIIDetectRedactFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: pii_detect_redact.app.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:DetectPiiEntities
+              Resource: "*"
+
+  SummariseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: summarise.app.lambda_handler
+      Timeout: 120
+      MemorySize: 1024
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+
+  ValidateRepairFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: validate_repair.app.lambda_handler
+      Timeout: 90
+      MemorySize: 512
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+
+  CaseCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: case_check.app.lambda_handler
+      Timeout: 300  # Increased for chunked processing (5 minutes)
+      MemorySize: 1024
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+
+  PersistSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: persist_summary.app.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+
+  A2IReviewFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: a2i_review.app.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sagemaker:StartHumanLoop
+                - sagemaker:DescribeHumanLoop
+              Resource: "*"
+
+  UpdateStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: update_status.app.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          SUMMARY_BUCKET: !Ref SummaryBucket
+          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryJobTable
+
   ### Initiate Lambda (API Gateway Trigger) ###
   InitiateSummaryFunction:
     Type: AWS::Serverless::Function
@@ -135,6 +374,7 @@ Resources:
           SUMMARY_BUCKET: !Ref SummaryBucket
           SUMMARY_JOBS_QUEUE: !Ref SummaryJobsQueue
           SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+          STATE_MACHINE_ARN: !Ref SummariserStateMachine
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref SummaryBucket
@@ -142,6 +382,11 @@ Resources:
             QueueName: !GetAtt SummaryJobsQueue.QueueName
         - DynamoDBCrudPolicy:
             TableName: !Ref SummaryJobTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref SummariserStateMachine
 
   ### Process Lambda (Triggered by SQS) ###
   ProcessSummaryFunction:

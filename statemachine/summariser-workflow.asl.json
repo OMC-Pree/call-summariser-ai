@@ -1,0 +1,479 @@
+{
+  "Comment": "AI-powered call summariser workflow with fan-out, gates, and A2I integration",
+  "StartAt": "UpdateStatusProcessing",
+  "States": {
+    "UpdateStatusProcessing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateStatusFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "status": "PROCESSING",
+          "metadata": {}
+        }
+      },
+      "ResultPath": null,
+      "Next": "FetchTranscript"
+    },
+    "FetchTranscript": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FetchTranscriptFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.fetchResult",
+      "ResultSelector": {
+        "transcript.$": "$.Payload.transcript",
+        "source.$": "$.Payload.source"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleFailure"
+        }
+      ],
+      "Next": "NormaliseRoles"
+    },
+    "NormaliseRoles": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NormaliseRolesFunctionArn}",
+        "Payload": {
+          "transcript.$": "$.fetchResult.transcript",
+          "coachName.$": "$.coachName",
+          "source.$": "$.fetchResult.source"
+        }
+      },
+      "ResultPath": "$.fetchResult",
+      "ResultSelector": {
+        "transcript.$": "$.Payload.transcript",
+        "source.$": "$.Payload.source"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Next": "PIIDetectRedact"
+    },
+    "PIIDetectRedact": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PIIDetectRedactFunctionArn}",
+        "Payload": {
+          "transcript.$": "$.fetchResult.transcript",
+          "meetingId.$": "$.meetingId",
+          "source.$": "$.fetchResult.source"
+        }
+      },
+      "ResultPath": "$",
+      "ResultSelector": {
+        "meetingId.$": "$.Payload.meetingId",
+        "coachName.$": "$$.Execution.Input.coachName",
+        "employerName.$": "$$.Execution.Input.employerName",
+        "source.$": "$.Payload.source",
+        "redactedTranscriptKey.$": "$.Payload.redactedTranscriptKey",
+        "piiEntityCount.$": "$.Payload.piiEntityCount",
+        "enableCaseCheck.$": "$$.Execution.Input.enableCaseCheck"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "ParallelProcessing"
+    },
+    "ParallelProcessing": {
+      "Type": "Parallel",
+      "Parameters": {
+        "meetingId.$": "$.meetingId",
+        "redactedTranscriptKey.$": "$.redactedTranscriptKey",
+        "enableCaseCheck.$": "$.enableCaseCheck"
+      },
+      "Branches": [
+        {
+          "StartAt": "GenerateSummary",
+          "States": {
+            "GenerateSummary": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${SummariseFunctionArn}",
+                "Payload": {
+                  "redactedTranscriptKey.$": "$.redactedTranscriptKey",
+                  "meetingId.$": "$.meetingId"
+                }
+              },
+              "ResultPath": "$.summaryResult",
+              "ResultSelector": {
+                "summary.$": "$.Payload.summary",
+                "rawResponse.$": "$.Payload.rawResponse"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["ThrottlingException"],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 3,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "Next": "ValidateRepairSummary"
+            },
+            "ValidateRepairSummary": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${ValidateRepairFunctionArn}",
+                "Payload": {
+                  "rawResponse.$": "$.summaryResult.rawResponse",
+                  "meetingId.$": "$.meetingId",
+                  "validationType": "summary"
+                }
+              },
+              "ResultPath": "$",
+              "ResultSelector": {
+                "validatedData.$": "$.Payload.validatedData",
+                "isValid.$": "$.Payload.isValid"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "CheckCaseCheckEnabled",
+          "States": {
+            "CheckCaseCheckEnabled": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.enableCaseCheck",
+                  "BooleanEquals": true,
+                  "Next": "PerformCaseCheck"
+                }
+              ],
+              "Default": "SkipCaseCheck"
+            },
+            "PerformCaseCheck": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${CaseCheckFunctionArn}",
+                "Payload": {
+                  "redactedTranscriptKey.$": "$.redactedTranscriptKey",
+                  "meetingId.$": "$.meetingId"
+                }
+              },
+              "ResultPath": "$",
+              "ResultSelector": {
+                "caseKey.$": "$.Payload.caseKey",
+                "passRate.$": "$.Payload.passRate"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["ThrottlingException"],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 3,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "End": true
+            },
+            "SkipCaseCheck": {
+              "Type": "Pass",
+              "Result": {
+                "caseKey": null,
+                "passRate": null
+              },
+              "ResultPath": "$",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallelResults",
+      "Next": "MergeResults"
+    },
+    "MergeResults": {
+      "Type": "Pass",
+      "Parameters": {
+        "meetingId.$": "$.meetingId",
+        "coachName.$": "$.coachName",
+        "employerName.$": "$.employerName",
+        "source.$": "$.source",
+        "validatedSummary.$": "$.parallelResults[0].validatedData",
+        "caseCheckResult": {
+          "caseKey.$": "$.parallelResults[1].caseKey",
+          "passRate.$": "$.parallelResults[1].passRate"
+        },
+        "redactedTranscriptKey.$": "$.redactedTranscriptKey"
+      },
+      "ResultPath": "$",
+      "Next": "PersistSummary"
+    },
+    "PersistSummary": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PersistSummaryFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "coachName.$": "$.coachName",
+          "employerName.$": "$.employerName",
+          "source.$": "$.source",
+          "validatedSummary.$": "$.validatedSummary",
+          "caseCheckResult.$": "$.caseCheckResult"
+        }
+      },
+      "ResultPath": "$.persistResult",
+      "ResultSelector": {
+        "summaryKey.$": "$.Payload.summaryKey",
+        "latestKey.$": "$.Payload.latestKey",
+        "metadata.$": "$.Payload.metadata"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "A2IGateDecision"
+    },
+    "A2IGateDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.caseCheckResult.caseKey",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.caseCheckResult.passRate",
+              "NumericLessThan": 0.5
+            }
+          ],
+          "Next": "StartA2IReview"
+        }
+      ],
+      "Default": "EmitCompletionEvents"
+    },
+    "StartA2IReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${A2IReviewFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "caseCheckKey.$": "$.caseCheckResult.caseKey",
+          "redactedTranscriptKey.$": "$.redactedTranscriptKey"
+        }
+      },
+      "ResultPath": "$.a2iResult",
+      "ResultSelector": {
+        "humanLoopName.$": "$.Payload.humanLoopName",
+        "status.$": "$.Payload.status"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.a2iError",
+          "Next": "EmitCompletionEvents"
+        }
+      ],
+      "Next": "EmitReviewEvents"
+    },
+    "EmitReviewEvents": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "call-summariser",
+            "DetailType": "Summary.InReview",
+            "Detail": {
+              "meetingId.$": "$.meetingId",
+              "humanLoopName.$": "$.a2iResult.humanLoopName",
+              "passRate.$": "$.caseCheckResult.passRate",
+              "timestamp.$": "$$.State.EnteredTime"
+            },
+            "EventBusName": "${EventBusName}"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Next": "UpdateStatusInReview"
+    },
+    "UpdateStatusInReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateStatusFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "status": "IN_REVIEW",
+          "metadata": {
+            "a2iCaseLoop.$": "$.a2iResult.humanLoopName",
+            "summaryKey.$": "$.persistResult.summaryKey",
+            "latestSummaryKey.$": "$.persistResult.latestKey"
+          }
+        }
+      },
+      "ResultPath": null,
+      "End": true
+    },
+    "EmitCompletionEvents": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "call-summariser",
+            "DetailType": "Summary.Completed",
+            "Detail": {
+              "meetingId.$": "$.meetingId",
+              "sentiment.$": "$.persistResult.metadata.sentiment",
+              "actionCount.$": "$.persistResult.metadata.actionCount",
+              "summaryKey.$": "$.persistResult.summaryKey",
+              "timestamp.$": "$$.State.EnteredTime"
+            },
+            "EventBusName": "${EventBusName}"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Next": "CheckCaseFlagged"
+    },
+    "CheckCaseFlagged": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.caseCheckResult.caseKey",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.caseCheckResult.passRate",
+              "NumericLessThan": 0.7
+            }
+          ],
+          "Next": "EmitCaseFlaggedEvent"
+        }
+      ],
+      "Default": "UpdateStatusCompleted"
+    },
+    "EmitCaseFlaggedEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "call-summariser",
+            "DetailType": "CaseCheck.Flagged",
+            "Detail": {
+              "meetingId.$": "$.meetingId",
+              "passRate.$": "$.caseCheckResult.passRate",
+              "caseKey.$": "$.caseCheckResult.caseKey",
+              "timestamp.$": "$$.State.EnteredTime"
+            },
+            "EventBusName": "${EventBusName}"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Next": "UpdateStatusCompleted"
+    },
+    "UpdateStatusCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateStatusFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "status": "COMPLETED",
+          "metadata": {
+            "summaryKey.$": "$.persistResult.summaryKey",
+            "latestSummaryKey.$": "$.persistResult.latestKey",
+            "sentiment.$": "$.persistResult.metadata.sentiment",
+            "actionCount.$": "$.persistResult.metadata.actionCount",
+            "source.$": "$.source",
+            "caseCheckKey.$": "$.caseCheckResult.caseKey",
+            "casePassRate.$": "$.caseCheckResult.passRate"
+          }
+        }
+      },
+      "ResultPath": null,
+      "End": true
+    },
+    "HandleFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateStatusFunctionArn}",
+        "Payload": {
+          "meetingId.$": "$.meetingId",
+          "status": "FAILED",
+          "metadata": {
+            "error.$": "$.error.Cause"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Next": "FailState"
+    },
+    "FailState": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "The summariser workflow failed. Check CloudWatch logs for details."
+    }
+  }
+}

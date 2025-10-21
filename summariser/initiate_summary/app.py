@@ -22,9 +22,13 @@ logger = logging.getLogger(__name__)
 # AWS clients with retry wrappers
 s3 = boto3.client("s3")
 sqs = boto3.client("sqs")
+sfn = boto3.client("stepfunctions")
 
 # DynamoDB with retry wrapper
 dynamodb_wrapper = DynamoDBRetryWrapper(SUMMARY_JOB_TABLE)
+
+# Step Functions State Machine ARN
+STATE_MACHINE_ARN = os.environ.get("STATE_MACHINE_ARN", "")
 
 @lambda_error_handler()
 def lambda_handler(event, context):
@@ -94,11 +98,16 @@ def lambda_handler(event, context):
     # 2) Mark QUEUED without clobbering COMPLETED
     _mark_queued(meeting_id)
 
-    # 3) Push to SQS
-    _push_to_queue(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
-
-    logger.info(f"Job queued successfully for meeting {meeting_id}")
-    return _response(202, {"message": "Job queued successfully", "meetingId": meeting_id})
+    # 3) Start Step Functions execution (if enabled) or fallback to SQS
+    if STATE_MACHINE_ARN:
+        execution_arn = _start_step_function(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
+        logger.info(f"Step Functions execution started for meeting {meeting_id}: {execution_arn}")
+        return _response(202, {"message": "Workflow started", "meetingId": meeting_id, "executionArn": execution_arn})
+    else:
+        # Fallback to legacy SQS queue
+        _push_to_queue(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
+        logger.info(f"Job queued successfully for meeting {meeting_id}")
+        return _response(202, {"message": "Job queued successfully", "meetingId": meeting_id})
 
 # ---------- Helpers ----------
 
@@ -171,6 +180,42 @@ def _mark_queued(meeting_id: str) -> None:
                 service="dynamodb",
                 correlation_id=meeting_id
             )
+
+def _start_step_function(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> str:
+    """Start Step Functions execution"""
+    input_data = {
+        "meetingId": meeting_id,
+        "coachName": coach_name,
+        "employerName": employer_name,
+        "enableCaseCheck": enable_case_check,
+        "forceReprocess": force_reprocess
+    }
+
+    if transcript:
+        input_data["transcript"] = transcript
+    else:
+        input_data["zoomMeetingId"] = zoom_meeting_id
+
+    if os.environ.get("AWS_SAM_LOCAL") == "true":
+        logger.info("🧪 [Mock] Would start Step Functions execution")
+        logger.debug(f"Input data: {json.dumps(input_data, indent=2)}")
+        return f"arn:aws:states:eu-west-2:000000000000:execution:call-summariser-workflow:mock-{meeting_id}"
+
+    try:
+        response = sfn.start_execution(
+            stateMachineArn=STATE_MACHINE_ARN,
+            name=f"meeting-{meeting_id}-{int(datetime.now(timezone.utc).timestamp())}",
+            input=json.dumps(input_data)
+        )
+        logger.info(f"Step Functions execution started for meeting {meeting_id}: {response['executionArn']}")
+        return response['executionArn']
+
+    except Exception as e:
+        raise ExternalServiceError(
+            f"Failed to start Step Functions execution: {e}",
+            service="stepfunctions",
+            correlation_id=meeting_id
+        )
 
 def _push_to_queue(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> None:
     """Push job message to SQS queue"""

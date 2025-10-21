@@ -79,14 +79,31 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
     if not meeting_id:
         return json.dumps({"error": "Please provide Meeting ID (OM)."}, indent=2)
 
-    # 1) If exists and completed, just fetch it (unless force_reprocess is enabled)
+    # 1) If exists and completed/in_review, just fetch it (unless force_reprocess is enabled)
     if not force_reprocess:
         status, err = _fetch_status(meeting_id)
-        if status and (status.get("status") or "").upper() == "COMPLETED":
+        current_status = (status.get("status") or "").upper() if status else ""
+        if status and current_status in ["COMPLETED", "IN_REVIEW"]:
             url = status.get("downloadUrl")
             if not url:
                 return json.dumps({"error": "Completed but no downloadUrl found."}, indent=2)
             body, derr = _download_summary(url)
+
+            # If IN_REVIEW, add a note
+            if current_status == "IN_REVIEW":
+                try:
+                    result = json.loads(body)
+                    result["_status"] = "IN_REVIEW"
+                    result["_note"] = "Summary is pending human review due to low case check pass rate"
+                    a2i_loop = status.get("metadata", {}).get("a2iCaseLoop")
+                    if a2i_loop:
+                        result["_a2iHumanLoopName"] = a2i_loop
+                    if A2I_PORTAL_URL:
+                        result["_a2iPortalUrl"] = A2I_PORTAL_URL
+                    return json.dumps(result, indent=2)
+                except:
+                    pass
+
             return body if derr is None else json.dumps({"error": derr}, indent=2)
 
     # 2) Otherwise, (re)submit a job — coach name optional, but useful.
@@ -155,11 +172,29 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
                 time.sleep(POLL_INTERVAL_SECS)
                 continue
 
-        if st and current_status == "COMPLETED":
+        if st and current_status in ["COMPLETED", "IN_REVIEW"]:
+            # Handle both COMPLETED and IN_REVIEW (when A2I is triggered)
             url = st.get("downloadUrl")
             if not url:
                 return json.dumps({"error": "No downloadUrl in status response."}, indent=2)
             body, derr = _download_summary(url)
+
+            # If IN_REVIEW, add a note to the response
+            if current_status == "IN_REVIEW":
+                try:
+                    result = json.loads(body)
+                    result["_status"] = "IN_REVIEW"
+                    result["_note"] = "Summary is pending human review due to low case check pass rate"
+                    a2i_loop = st.get("metadata", {}).get("a2iCaseLoop")
+                    if a2i_loop:
+                        result["_a2iHumanLoopName"] = a2i_loop
+                    if A2I_PORTAL_URL:
+                        result["_a2iPortalUrl"] = A2I_PORTAL_URL
+                    return json.dumps(result, indent=2)
+                except:
+                    # If parsing fails, just return the original body
+                    pass
+
             return body if derr is None else json.dumps({"error": derr}, indent=2)
         if st and current_status == "FAILED":
             return json.dumps({"error": "Processing failed", "details": st.get("error")}, indent=2)

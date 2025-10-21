@@ -24,7 +24,7 @@ def lambda_handler(event, context):
             return _resp(404, {"error": "Job not found", "meetingId": meeting_id})
 
         status = (item.get("status") or "UNKNOWN").upper()
-        if status != "COMPLETED":
+        if status not in ["COMPLETED", "IN_REVIEW"]:
             # pass back status only while processing
             return _resp(200, {"meetingId": meeting_id, "status": status})
 
@@ -84,11 +84,18 @@ def lambda_handler(event, context):
             ExpiresIn=300  # 5 minutes
         )
 
-        return _resp(200, {
+        response = {
             "meetingId": meeting_id,
-            "status": "COMPLETED",
+            "status": status,
             "downloadUrl": url
-        })
+        }
+
+        # Include metadata if present (e.g., for IN_REVIEW status)
+        metadata = item.get("metadata")
+        if metadata:
+            response["metadata"] = metadata
+
+        return _resp(200, response)
 
     except Exception as e:
         return _resp(500, {"error": str(e)})

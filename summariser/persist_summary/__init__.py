@@ -1,0 +1,1 @@
+# Persist Summary Lambda module
