@@ -26,7 +26,7 @@
       },
       "ResultPath": "$.fetchResult",
       "ResultSelector": {
-        "transcript.$": "$.Payload.transcript",
+        "transcriptKey.$": "$.Payload.transcriptKey",
         "source.$": "$.Payload.source"
       },
       "Retry": [
@@ -52,14 +52,15 @@
       "Parameters": {
         "FunctionName": "${NormaliseRolesFunctionArn}",
         "Payload": {
-          "transcript.$": "$.fetchResult.transcript",
+          "transcriptKey.$": "$.fetchResult.transcriptKey",
+          "meetingId.$": "$.meetingId",
           "coachName.$": "$.coachName",
           "source.$": "$.fetchResult.source"
         }
       },
       "ResultPath": "$.fetchResult",
       "ResultSelector": {
-        "transcript.$": "$.Payload.transcript",
+        "transcriptKey.$": "$.Payload.transcriptKey",
         "source.$": "$.Payload.source"
       },
       "Retry": [
@@ -78,7 +79,7 @@
       "Parameters": {
         "FunctionName": "${PIIDetectRedactFunctionArn}",
         "Payload": {
-          "transcript.$": "$.fetchResult.transcript",
+          "transcriptKey.$": "$.fetchResult.transcriptKey",
           "meetingId.$": "$.meetingId",
           "source.$": "$.fetchResult.source"
         }
@@ -126,8 +127,7 @@
               },
               "ResultPath": "$.summaryResult",
               "ResultSelector": {
-                "summaryS3Key.$": "$.Payload.summaryS3Key",
-                "rawResponseS3Key.$": "$.Payload.rawResponseS3Key"
+                "summaryKey.$": "$.Payload.summaryKey"
               },
               "Retry": [
                 {
@@ -156,7 +156,7 @@
               "Type": "Pass",
               "Comment": "Summary generation failed, return minimal valid data",
               "Result": {
-                "validatedDataS3Key": null,
+                "validatedDataKey": null,
                 "isValid": false,
                 "error": "Summary generation failed"
               },
@@ -169,14 +169,14 @@
               "Parameters": {
                 "FunctionName": "${ValidateRepairFunctionArn}",
                 "Payload": {
-                  "rawResponseS3Key.$": "$.summaryResult.rawResponseS3Key",
+                  "summaryKey.$": "$.summaryResult.summaryKey",
                   "meetingId.$": "$.meetingId",
                   "validationType": "summary"
                 }
               },
               "ResultPath": "$",
               "ResultSelector": {
-                "validatedDataS3Key.$": "$.Payload.validatedDataS3Key",
+                "validatedDataKey.$": "$.Payload.validatedDataKey",
                 "isValid.$": "$.Payload.isValid"
               },
               "Retry": [
@@ -256,6 +256,7 @@
         }
       ],
       "ResultPath": "$.parallelResults",
+      "OutputPath": "$",
       "Next": "MergeResults"
     },
     "MergeResults": {
@@ -266,11 +267,12 @@
         "employerName.$": "$.employerName",
         "source.$": "$.source",
         "forceReprocess.$": "$$.Execution.Input.forceReprocess",
-        "validatedSummaryS3Key.$": "$.parallelResults[0].validatedDataS3Key",
+        "validatedDataKey.$": "$.parallelResults[0].validatedDataKey",
         "caseCheckResult": {
           "caseKey.$": "$.parallelResults[1].caseKey",
           "passRate.$": "$.parallelResults[1].passRate"
-        }
+        },
+        "redactedTranscriptKey.$": "$.redactedTranscriptKey"
       },
       "ResultPath": "$",
       "Next": "PersistSummary"
@@ -286,7 +288,7 @@
           "employerName.$": "$.employerName",
           "source.$": "$.source",
           "forceReprocess.$": "$.forceReprocess",
-          "validatedSummaryS3Key.$": "$.validatedSummaryS3Key",
+          "validatedDataKey.$": "$.validatedDataKey",
           "caseCheckResult.$": "$.caseCheckResult"
         }
       },

@@ -8,6 +8,7 @@ from utils import helper
 from utils.error_handler import lambda_error_handler, ValidationError
 from constants import *
 from prompts import SUMMARY_PROMPT_TEMPLATE, SUMMARY_SYSTEM_MESSAGE
+from datetime import datetime, timezone
 
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
@@ -34,8 +35,8 @@ def lambda_handler(event, context):
         - meetingId: str
 
     Output:
-        - summary: dict (parsed response preview)
-        - rawResponse: str (full LLM response for validation step)
+        - summaryKey: str (S3 key to raw LLM output for validation step)
+        - tokenUsage: dict (token usage metadata)
     """
     transcript_key = event.get("redactedTranscriptKey")
     meeting_id = event.get("meetingId")
@@ -85,10 +86,33 @@ def lambda_handler(event, context):
         output_chars=len(raw_resp),
     )
 
+    # Save raw summary to supplementary folder for validation step
+    if ATHENA_PARTITIONED:
+        now = datetime.now(timezone.utc)
+        summary_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/raw_summary.json"
+    else:
+        summary_key = f"{S3_PREFIX}/supplementary/{meeting_id}/raw_summary.json"
+    s3.put_object(
+        Bucket=SUMMARY_BUCKET,
+        Key=summary_key,
+        Body=raw_text,
+        ContentType='application/json'
+    )
+
+    helper.log_json("INFO", "RAW_SUMMARY_SAVED",
+                   meetingId=meeting_id,
+                   summaryKey=summary_key,
+                   size=len(raw_text))
+
+    # Extract token usage from payload
+    usage = payload.get("usage", {})
+    token_usage = {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+    }
+
     return {
-        "summary": {
-            "preview": raw_text[:500],  # Preview for logging
-            "length": len(raw_text)
-        },
-        "rawResponse": raw_text  # Full response for validation
+        "summaryKey": summary_key,  # S3 key only
+        "tokenUsage": token_usage  # Metadata for tracking
     }

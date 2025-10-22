@@ -236,17 +236,28 @@ def lambda_error_handler(correlation_id_field: str = 'aws_request_id'):
             except Exception as e:
                 error_response = error_handler.handle_error(e, context_dict)
 
-                # Return proper HTTP response format for API Gateway
-                status_code = 400 if isinstance(e, ValidationError) else 500
+                # Detect invocation source: Step Functions vs API Gateway
+                # Step Functions events don't have 'httpMethod' or 'requestContext'
+                is_api_gateway = isinstance(event, dict) and (
+                    'httpMethod' in event or
+                    'requestContext' in event or
+                    'headers' in event
+                )
 
-                return {
-                    'statusCode': status_code,
-                    'headers': {
-                        'Content-Type': 'application/json',
-                        'X-Correlation-ID': correlation_id
-                    },
-                    'body': json.dumps(error_response)
-                }
+                if is_api_gateway:
+                    # Return HTTP response format for API Gateway
+                    status_code = 400 if isinstance(e, ValidationError) else 500
+                    return {
+                        'statusCode': status_code,
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'X-Correlation-ID': correlation_id
+                        },
+                        'body': json.dumps(error_response)
+                    }
+                else:
+                    # For Step Functions, raise the error so it can be caught/retried
+                    raise
 
         return wrapper
     return decorator

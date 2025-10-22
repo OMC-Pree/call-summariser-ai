@@ -184,7 +184,7 @@ def lambda_handler(event, context):
         - coachName: str
         - employerName: str
         - source: str
-        - validatedSummary: dict
+        - validatedDataKey: str (S3 key to validated summary data)
         - caseCheckResult: dict (optional)
         - forceReprocess: bool (optional, default False)
 
@@ -197,14 +197,19 @@ def lambda_handler(event, context):
     coach_name = event.get("coachName")
     employer_name = event.get("employerName", "")
     source = event.get("source")
-    validated_summary = event.get("validatedSummary")
+    validated_data_key = event.get("validatedDataKey")
     force_reprocess = bool(event.get("forceReprocess", False))
 
     if not meeting_id:
         raise ValidationError("meetingId is required")
 
-    if not validated_summary:
-        raise ValidationError("validatedSummary is required")
+    if not validated_data_key:
+        raise ValidationError("validatedDataKey is required")
+
+    # Read validated data from S3
+    helper.log_json("INFO", "LOADING_VALIDATED_DATA_FROM_S3", meetingId=meeting_id, validatedDataKey=validated_data_key)
+    response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=validated_data_key)
+    validated_summary = json.loads(response['Body'].read().decode('utf-8'))
 
     if force_reprocess:
         helper.log_json("INFO", "FORCE_REPROCESS_PERSIST", meetingId=meeting_id, coachName=coach_name)

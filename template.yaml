@@ -25,6 +25,9 @@ Globals:
         # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
         A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
         A2I_PORTAL_URL: ""
+        # DynamoDB table and S3 bucket - set globally for all Lambdas
+        SUMMARY_JOB_TABLE: !Ref SummaryJobTable
+        SUMMARY_BUCKET: !Ref SummaryBucket
 
 Resources:
   ### Shared Dependencies Layer ###
@@ -163,10 +166,6 @@ Resources:
       Handler: fetch_transcript.app.lambda_handler
       Timeout: 120
       MemorySize: 512
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -188,6 +187,9 @@ Resources:
       Handler: normalise_roles.app.lambda_handler
       Timeout: 30
       MemorySize: 256
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SummaryBucket
 
   PIIDetectRedactFunction:
     Type: AWS::Serverless::Function
@@ -199,10 +201,6 @@ Resources:
       Handler: pii_detect_redact.app.lambda_handler
       Timeout: 60
       MemorySize: 512
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -222,10 +220,6 @@ Resources:
       Handler: summarise.app.lambda_handler
       Timeout: 120
       MemorySize: 1024
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -246,10 +240,6 @@ Resources:
       Handler: validate_repair.app.lambda_handler
       Timeout: 90
       MemorySize: 512
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -270,10 +260,6 @@ Resources:
       Handler: case_check.app.lambda_handler
       Timeout: 300  # Increased for chunked processing (5 minutes)
       MemorySize: 1024
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -294,10 +280,6 @@ Resources:
       Handler: persist_summary.app.lambda_handler
       Timeout: 60
       MemorySize: 512
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -312,10 +294,6 @@ Resources:
       Handler: a2i_review.app.lambda_handler
       Timeout: 60
       MemorySize: 256
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
@@ -336,10 +314,6 @@ Resources:
       Handler: update_status.app.lambda_handler
       Timeout: 30
       MemorySize: 256
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SummaryJobTable
@@ -353,17 +327,15 @@ Resources:
       Layers:
         - !Ref SharedDependenciesLayer
       Handler: initiate_summary.app.lambda_handler
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref SummariserStateMachine
       Events:
         Api:
           Type: Api
           Properties:
             Path: /summarise
             Method: post
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
-          STATE_MACHINE_ARN: !Ref SummariserStateMachine
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref SummaryBucket
@@ -391,10 +363,6 @@ Resources:
           Properties:
             Path: /status
             Method: get
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SummaryJobTable
@@ -415,10 +383,6 @@ Resources:
           Properties:
             Path: /summaries
             Method: get
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SummaryJobTable
@@ -439,10 +403,6 @@ Resources:
           Properties:
             Path: /case
             Method: get
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SummaryJobTable
@@ -466,10 +426,6 @@ Resources:
           Properties:
             Schedule: rate(5 minutes)
             Enabled: true
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SummaryJobTable
@@ -494,18 +450,16 @@ Resources:
       Handler: health_check.app.lambda_handler
       Timeout: 30
       MemorySize: 256
+      Environment:
+        Variables:
+          MODEL_VERSION: !Ref AWS::StackName
+          SUMMARY_SCHEMA_VERSION: "1.2"
       Events:
         Api:
           Type: Api
           Properties:
             Path: /health
             Method: get
-      Environment:
-        Variables:
-          SUMMARY_BUCKET: !Ref SummaryBucket
-          SUMMARY_JOB_TABLE: !Ref SummaryJobTable
-          MODEL_VERSION: !Ref AWS::StackName
-          SUMMARY_SCHEMA_VERSION: "1.2"
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref SummaryJobTable

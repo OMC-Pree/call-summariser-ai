@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 
 import boto3
+from utils import helper
 from utils.error_handler import lambda_error_handler, ValidationError
 from constants import *
 
@@ -199,35 +200,58 @@ def lambda_handler(event, context):
 
     # Direct transcript provided
     if transcript:
-        # Save to S3 if enabled
-        if SAVE_TRANSCRIPTS:
-            now = datetime.now(timezone.utc)
-            if ATHENA_PARTITIONED:
-                base = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}"
-            else:
-                base = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}"
-            _s3_put_text(SUMMARY_BUCKET, f"{base}/transcript.txt", transcript, "text/plain")
+        # Always save to S3 for payload hygiene
+        now = datetime.now(timezone.utc)
+        if ATHENA_PARTITIONED:
+            base = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}"
+        else:
+            base = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}"
+        transcript_key = f"{base}/transcript.txt"
+        _s3_put_text(SUMMARY_BUCKET, transcript_key, transcript, "text/plain")
+
+        helper.log_json("INFO", "TRANSCRIPT_SAVED", meetingId=meeting_id, transcriptKey=transcript_key, size=len(transcript))
 
         return {
-            "transcript": transcript,
-            "source": "direct",
-            "rawVtt": None
+            "transcriptKey": transcript_key,
+            "source": "direct"
         }
 
     # Fetch from Zoom
     elif zoom_meeting_id:
         plain, raw_vtt = fetch_transcript_by_zoom_meeting_id(zoom_meeting_id, meeting_id)
+
+        # Save to S3 and return key
+        now = datetime.now(timezone.utc)
+        if ATHENA_PARTITIONED:
+            base = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}"
+        else:
+            base = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}"
+        transcript_key = f"{base}/transcript.txt"
+        _s3_put_text(SUMMARY_BUCKET, transcript_key, plain, "text/plain")
+
+        helper.log_json("INFO", "TRANSCRIPT_SAVED", meetingId=meeting_id, transcriptKey=transcript_key, source="zoom_api", size=len(plain))
+
         return {
-            "transcript": plain,
-            "source": "zoom_api",
-            "rawVtt": raw_vtt
+            "transcriptKey": transcript_key,
+            "source": "zoom_api"
         }
 
     # Fetch from S3 (reprocessing)
     else:
         transcript = fetch_from_s3(meeting_id)
+
+        # Transcript already in S3, just return the key
+        # Need to determine the key from the fetch_from_s3 logic
+        now = datetime.now(timezone.utc)
+        if ATHENA_PARTITIONED:
+            # Try to find existing transcript
+            transcript_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/transcript.txt"
+        else:
+            transcript_key = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}/transcript.txt"
+
+        helper.log_json("INFO", "TRANSCRIPT_FOUND", meetingId=meeting_id, transcriptKey=transcript_key, source="s3_existing")
+
         return {
-            "transcript": transcript,
-            "source": "s3_existing",
-            "rawVtt": None
+            "transcriptKey": transcript_key,
+            "source": "s3_existing"
         }

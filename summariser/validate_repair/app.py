@@ -87,6 +87,28 @@ def _extract_json_object(text: str) -> str:
     return incomplete_text
 
 
+def _save_validated_to_s3(meeting_id: str, validated_data: dict) -> str:
+    """Save validated data to S3 and return the key"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
+    if ATHENA_PARTITIONED:
+        validated_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/validated_summary.json"
+    else:
+        validated_key = f"{S3_PREFIX}/supplementary/{meeting_id}/validated_summary.json"
+
+    validated_json = json.dumps(validated_data)
+    s3.put_object(
+        Bucket=SUMMARY_BUCKET,
+        Key=validated_key,
+        Body=validated_json.encode('utf-8'),
+        ContentType='application/json'
+    )
+
+    helper.log_json("INFO", "VALIDATED_DATA_SAVED", meetingId=meeting_id, validatedKey=validated_key, size=len(validated_json))
+    return validated_key
+
+
 def _repair_json_with_llm(meeting_id: str, bad_text: str) -> str:
     """
     Ask the model to repair malformed JSON.
@@ -119,23 +141,28 @@ def lambda_handler(event, context):
     Validate and repair LLM JSON output.
 
     Input:
-        - rawResponse: str (LLM output)
+        - summaryKey: str (S3 key to raw LLM output)
         - meetingId: str
         - validationType: str (summary|casecheck)
 
     Output:
-        - validatedData: dict (parsed and validated)
+        - validatedDataKey: str (S3 key to validated summary)
         - isValid: bool
     """
-    raw_response = event.get("rawResponse")
+    summary_key = event.get("summaryKey")
     meeting_id = event.get("meetingId")
     validation_type = event.get("validationType", "summary")
 
-    if not raw_response:
-        raise ValueError("rawResponse is required")
+    if not summary_key:
+        raise ValueError("summaryKey is required")
 
     if not meeting_id:
         raise ValueError("meetingId is required")
+
+    # Load raw response from S3
+    helper.log_json("INFO", "LOADING_SUMMARY_FROM_S3", meetingId=meeting_id, summaryKey=summary_key)
+    response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=summary_key)
+    raw_response = response['Body'].read().decode('utf-8')
 
     helper.log_json("INFO", "VALIDATING", meetingId=meeting_id, validationType=validation_type)
 
@@ -145,8 +172,9 @@ def lambda_handler(event, context):
         validated = ClaudeResponse.model_validate_json(cleaned_json)
         helper.log_json("INFO", "VALIDATION_SUCCESS_DIRECT", meetingId=meeting_id)
 
+        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
         return {
-            "validatedData": validated.model_dump(),
+            "validatedDataKey": validated_key,
             "isValid": True
         }
     except ValidationError as e:
@@ -158,8 +186,9 @@ def lambda_handler(event, context):
         validated = ClaudeResponse.model_validate_json(cleaned)
         helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_STRIP", meetingId=meeting_id)
 
+        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
         return {
-            "validatedData": validated.model_dump(),
+            "validatedDataKey": validated_key,
             "isValid": True
         }
     except ValidationError as e:
@@ -171,8 +200,9 @@ def lambda_handler(event, context):
         validated = ClaudeResponse.model_validate_json(extracted)
         helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_EXTRACT", meetingId=meeting_id)
 
+        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
         return {
-            "validatedData": validated.model_dump(),
+            "validatedDataKey": validated_key,
             "isValid": True
         }
     except ValidationError as e:
@@ -182,12 +212,12 @@ def lambda_handler(event, context):
     try:
         from datetime import datetime, timezone
 
-        # Save raw for debugging
-        debug_now = datetime.now(timezone.utc)
+        # Save raw for debugging in supplementary folder
         if ATHENA_PARTITIONED:
-            raw_key = f"{S3_PREFIX}/version={SCHEMA_VERSION}/year={debug_now.year}/month={debug_now.month:02d}/meeting_id={meeting_id}/model_raw.txt"
+            now = datetime.now(timezone.utc)
+            raw_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/model_raw.txt"
         else:
-            raw_key = f"{S3_PREFIX}/{debug_now:%Y/%m}/{meeting_id}/model_raw.txt"
+            raw_key = f"{S3_PREFIX}/supplementary/{meeting_id}/model_raw.txt"
 
         s3.put_object(
             Bucket=SUMMARY_BUCKET,
@@ -200,8 +230,9 @@ def lambda_handler(event, context):
         validated = ClaudeResponse.model_validate_json(repaired)
         helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_REPAIR", meetingId=meeting_id)
 
+        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
         return {
-            "validatedData": validated.model_dump(),
+            "validatedDataKey": validated_key,
             "isValid": True
         }
     except Exception as e:
