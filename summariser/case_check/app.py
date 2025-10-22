@@ -108,16 +108,17 @@ def merge_case_check_results(chunk_results: List[dict]) -> dict:
 
         # Merge strategy for compliance safety:
         # - Fail takes priority (conservative approach - if ANY chunk shows failure, flag it)
-        # - Then Pass (evidence found)
+        # - Then Competent (fully compliant)
+        # - Then CompetentWithDevelopment (compliant but could improve)
         # - Then Inconclusive
         # - Finally NotApplicable
         # Within same status, use highest confidence
-        priority = {"Fail": 4, "Pass": 3, "Inconclusive": 2, "NotApplicable": 1}
+        priority = {"Fail": 5, "Competent": 4, "CompetentWithDevelopment": 3, "Inconclusive": 2, "NotApplicable": 1}
         best_check = max(check_across_chunks, key=lambda c: (priority.get(c["status"], 0), c.get("confidence", 0)))
 
         # Combine evidence quotes from all chunks that found evidence
         all_quotes = [c.get("evidence_quote", "") for c in check_across_chunks
-                     if c.get("evidence_quote") and c["status"] in ["Pass", "Fail"]]
+                     if c.get("evidence_quote") and c["status"] in ["Competent", "CompetentWithDevelopment", "Fail"]]
         if all_quotes:
             best_check["evidence_quote"] = " | ".join(filter(None, all_quotes))[:500]  # Limit length
 
@@ -133,8 +134,8 @@ def merge_case_check_results(chunk_results: List[dict]) -> dict:
 
     # Recalculate overall statistics
     total_checks = len(merged["results"])
-    passed_checks = sum(1 for r in merged["results"] if r["status"] == "Pass")
-    pass_rate = passed_checks / total_checks if total_checks > 0 else 0
+    competent_checks = sum(1 for r in merged["results"] if r["status"] in ["Competent", "CompetentWithDevelopment"])
+    pass_rate = competent_checks / total_checks if total_checks > 0 else 0
 
     failed_ids = [r["id"] for r in merged["results"] if r["status"] == "Fail"]
     high_severity_flags = [r["id"] for r in merged["results"]
@@ -152,7 +153,7 @@ def merge_case_check_results(chunk_results: List[dict]) -> dict:
 
 # ---------- Case check models ----------
 Span = Tuple[int, int]
-Status = Literal["Pass", "Fail", "NotApplicable", "Inconclusive"]
+Status = Literal["Competent", "CompetentWithDevelopment", "Fail", "NotApplicable", "Inconclusive"]
 
 
 class CaseCheckResult(BaseModel):
@@ -176,22 +177,34 @@ class CaseCheckPayload(BaseModel):
 
 
 STARTER_SESSION_CHECKS = [
-    {"id": "call_recording_confirmed", "prompt": "Did the coach confirm call recording?", "required": True, "severity": "high"},
-    {"id": "regulated_advice_given", "prompt": "Did the coach give regulated financial advice (e.g. specific product or investment recommendation)? NOTE: This is not permitted. If the coach gave regulated advice, the status must be 'Fail'.", "required": True, "severity": "high"},
-    {"id": "dob_confirmed", "prompt": "Was the client's date of birth confirmed?", "required": True, "severity": "medium"},
-    {"id": "full_name_confirmed", "prompt": "Was the client's full name confirmed?", "required": True, "severity": "medium"},
-    {"id": "financial_info_confirmed", "prompt": "Was the client's financial information confirmed (income, debts, savings, etc.)?", "required": True, "severity": "medium"},
-    {"id": "partner_status_confirmed", "prompt": "Was the client's partner/marital status confirmed?", "required": False, "severity": "low"},
-    {"id": "dependents_confirmed", "prompt": "Were dependents confirmed?", "required": False, "severity": "low"},
-    {"id": "vulnerability_identified", "prompt": "Was any client vulnerability identified or discussed?", "required": True, "severity": "medium"},
-    {"id": "citizenship_residency_confirmed", "prompt": "Were the client's citizenship and residency confirmed?", "required": True, "severity": "medium"},
-    {"id": "fees_charges_explained", "prompt": "Were fees and charges correctly explained to the client?", "required": True, "severity": "medium"},
-    {"id": "client_agreed_to_sign_up", "prompt": "Did the client agree to sign up to the service?", "required": False, "severity": "medium"},
-    {"id": "holistic_explanation", "prompt": "Did the coach explain how they and Octopus Money help clients holistically (including getting advice)?", "required": True, "severity": "medium"},
-    {"id": "action_ownership_explained", "prompt": "Did the coach explain that success depends on actions the client must complete?", "required": True, "severity": "medium"},
-    {"id": "goal_understood_and_addressed", "prompt": "Did the coach fully understand the client's most important goal and give relevant suggestions?", "required": True, "severity": "medium"},
-    {"id": "services_understood", "prompt": "Did the client clearly understand all relevant areas where Octopus Money can help (upfront and ongoing)?", "required": True, "severity": "medium"},
-    {"id": "suitability_for_ongoing_advice", "prompt": "Is the client suitable for ongoing advice?", "required": True, "severity": "high"}
+    # Compliance Criteria
+    {"id": "call_recording_confirmed", "prompt": "Call recording confirmed? Did the coach confirm that the call is being recorded for training and compliance purposes?", "required": True, "severity": "high"},
+    {"id": "regulated_advice_given", "prompt": "Was regulated financial advice given and/or was there evidence of steering/social norming? NOTE: This is NOT permitted. Regulated advice means specific product recommendations or steering towards specific actions. If the coach gave regulated advice or steered the client, the status must be 'Fail'.", "required": True, "severity": "high"},
+    {"id": "vulnerability_identified", "prompt": "Was any vulnerability identified and addressed appropriately? Did the coach identify any client vulnerabilities (financial, health, life circumstances) and handle them appropriately?", "required": True, "severity": "high"},
+    {"id": "dob_confirmed", "prompt": "Date of Birth confirmed? Was the client's date of birth confirmed during the call?", "required": True, "severity": "medium"},
+    {"id": "client_name_confirmed", "prompt": "Client name confirmed? Was the client's full name confirmed during the call?", "required": True, "severity": "medium"},
+    {"id": "marital_status_confirmed", "prompt": "Client's marital status confirmed? Was the client's marital/partner status confirmed?", "required": True, "severity": "medium"},
+    {"id": "citizenship_confirmed", "prompt": "UK Citizenship and if any US tax connections confirmed? Did the coach confirm UK citizenship/residency and check for any US tax connections?", "required": True, "severity": "medium"},
+    {"id": "dependents_confirmed", "prompt": "Dependents confirmed? Were dependents confirmed? Note: Dependents are not limited to just children.", "required": True, "severity": "medium"},
+    {"id": "pension_details_confirmed", "prompt": "Pension details confirmed? Did the coach confirm the client's pension details (current pensions, contributions, amounts)?", "required": True, "severity": "medium"},
+    {"id": "income_expenditure_confirmed", "prompt": "Income and expenditure details confirmed? Did the coach confirm the client's income and expenditure details?", "required": True, "severity": "medium"},
+    {"id": "assets_liabilities_confirmed", "prompt": "Assets and liabilities details confirmed? Did the coach confirm the client's assets (savings, property, investments) and liabilities (debts, loans)?", "required": True, "severity": "medium"},
+    {"id": "emergency_fund_confirmed", "prompt": "Emergency fund confirmed? Did the coach discuss and confirm the client's emergency fund status?", "required": True, "severity": "medium"},
+    {"id": "will_confirmed", "prompt": "Will confirmed? Did the coach confirm whether the client has a will in place?", "required": True, "severity": "low"},
+    {"id": "pension_withdrawal_if_over_50", "prompt": "If over 50, will the client be withdrawing from their pension within the next 5 years? If the client is over 50, did the coach check if they plan to withdraw from their pension in the next 5 years?", "required": False, "severity": "medium"},
+    {"id": "high_interest_debt_addressed", "prompt": "If the client has high-interest unsecured debt, did the coach let them know they won't be able to produce any recommendations until that debt is paid off?", "required": False, "severity": "high"},
+    {"id": "fees_charges_explained", "prompt": "Were fees and charges correctly explained to the client? Did the coach clearly explain the service fees (e.g., £299, salary sacrifice options)?", "required": True, "severity": "high"},
+    {"id": "way_forward_agreed", "prompt": "Was a way forward agreed with the client? Did the coach and client agree on next steps and book a follow-up session?", "required": True, "severity": "medium"},
+
+    # Macro-Criteria (Coaching Quality)
+    {"id": "coach_introduction_signposting", "prompt": "Did the coach introduce themselves and Octopus Money, and signpost the structure of this call? Did the coach provide a clear introduction and outline of what the call would cover?", "required": True, "severity": "medium"},
+    {"id": "client_goals_established", "prompt": "Did the coach establish key information about the client's goals? Did the coach ask about and explore the client's financial goals?", "required": True, "severity": "high"},
+    {"id": "current_actions_established", "prompt": "Did the coach establish what the client is already doing to work towards their goals? Did the coach explore existing actions, savings, investments, or plans?", "required": True, "severity": "medium"},
+    {"id": "client_motivations_established", "prompt": "Did the coach establish client motivations for achieving their goals? Did the coach explore WHY the goals are important to the client?", "required": True, "severity": "medium"},
+    {"id": "relevant_suggestions_provided", "prompt": "Were relevant suggestions provided to the client based on the goals explored? Did the coach provide practical, relevant suggestions tailored to the client's specific goals and circumstances?", "required": True, "severity": "high"},
+    {"id": "money_calculators_introduced", "prompt": "Did the coach introduce the money calculators? Did the coach explain and introduce the money calculators that the client will use?", "required": True, "severity": "medium"},
+    {"id": "asked_client_move_forward", "prompt": "Did the coach clearly ask the client if they want to move forward with the service? Did the coach explicitly ask if the client wants to sign up and continue?", "required": True, "severity": "high"},
+    {"id": "client_questions_opportunity", "prompt": "Did the client have the opportunity to ask any questions? Did the coach provide opportunities throughout and at the end for the client to ask questions?", "required": True, "severity": "medium"}
 ]
 
 
