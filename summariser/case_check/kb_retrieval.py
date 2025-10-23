@@ -219,34 +219,50 @@ def retrieve_examples_by_category(
         return []
 
 
-def format_examples_for_prompt(examples: List[Dict]) -> str:
+def format_examples_for_prompt(examples: List[Dict], max_tokens_per_example: int = 400) -> str:
     """
-    Format retrieved examples into a string suitable for prompt injection.
+    Format retrieved examples with minimal token overhead.
+
+    Uses token-aware truncation and removes verbose formatting to maximize
+    the ratio of useful content to formatting overhead.
+
+    Note: The instruction "Use these examples to guide assessment quality"
+    should be in your main system prompt, not repeated here per call.
 
     Args:
         examples: List of example dictionaries from KB retrieval
+        max_tokens_per_example: Rough token budget per example (default: 400)
+                                Uses approximation of 1 token ≈ 4 characters
 
     Returns:
-        Formatted string with examples
+        Formatted string with examples (minimal overhead)
     """
     if not examples:
         return ""
 
-    formatted = "\n\n--- REFERENCE EXAMPLES ---\n"
-    formatted += "Use these examples to guide your assessment quality and format:\n\n"
+    # Minimal header - use XML-style tags for clear boundaries
+    formatted = "\n<examples>\n"
 
     for idx, example in enumerate(examples, 1):
         content = example.get('content', '')
-        score = example.get('score', 0.0)
 
-        # Truncate very long examples to save tokens
-        if len(content) > 1500:
-            content = content[:1500] + "...[truncated]"
+        # Token-aware truncation (rough: 1 token ≈ 4 characters)
+        max_chars = max_tokens_per_example * 4
+        if len(content) > max_chars:
+            # Truncate at sentence boundary for coherence
+            truncated = content[:max_chars]
+            last_period = truncated.rfind('.')
+            # If we can keep >70% of content with sentence boundary, use it
+            if last_period > max_chars * 0.7:
+                content = truncated[:last_period + 1]
+            else:
+                content = truncated + "..."
 
-        formatted += f"EXAMPLE {idx} (relevance: {score:.2f}):\n"
-        formatted += f"{content}\n"
-        formatted += "-" * 60 + "\n\n"
+        # Minimal formatting - no decorative separators or relevance scores
+        # (LLMs don't effectively use relevance scores in practice)
+        formatted += f"\n[Example {idx}]\n{content}\n"
 
+    formatted += "</examples>\n"
     return formatted
 
 
