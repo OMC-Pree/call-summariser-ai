@@ -5,6 +5,7 @@ Uses AWS Bedrock Knowledge Base to retrieve relevant assessment examples
 import boto3
 import json
 from typing import List, Dict, Optional
+from datetime import datetime, timedelta
 from utils import helper
 from constants import *
 
@@ -14,6 +15,12 @@ bedrock_agent_runtime = boto3.client("bedrock-agent-runtime", region_name=AWS_RE
 # Knowledge Base Configuration
 # KB_ID should be passed as parameter to functions (loaded from Parameter Store in app.py)
 # Note: The Knowledge Base uses amazon.titan-embed-text-v2:0 for embeddings (configured in KB settings)
+
+# Cache Configuration
+# Cache category-level retrievals to avoid repeated API calls for the same content
+# KB content is relatively static, so caching provides significant cost and latency savings
+_CATEGORY_CACHE: Dict[str, tuple[datetime, List[Dict]]] = {}
+_CACHE_DURATION = timedelta(hours=1)  # Adjust based on KB update frequency
 
 
 def retrieve_examples_for_check(
@@ -98,21 +105,40 @@ Check ID: {check_id}
 def retrieve_examples_by_category(
     category: str,
     max_results: int = 3,
-    kb_id: Optional[str] = None
+    kb_id: Optional[str] = None,
+    use_cache: bool = True
 ) -> List[Dict]:
     """
     Retrieve examples for an entire category of checks (e.g., all compliance checks).
+
+    Uses in-memory caching to avoid repeated API calls for the same category.
+    Cache expires after _CACHE_DURATION (default: 1 hour).
 
     Args:
         category: Category name ("compliance" or "macro")
         max_results: Maximum number of examples to retrieve
         kb_id: Knowledge Base ID (required - must be passed from caller)
+        use_cache: Whether to use caching (default: True, set False for testing)
 
     Returns:
         List of retrieved examples
     """
     if not kb_id:
         return []
+
+    # Check cache first
+    if use_cache:
+        cache_key = f"{category.lower()}_{max_results}_{kb_id}"
+        cached = _CATEGORY_CACHE.get(cache_key)
+
+        if cached:
+            cache_time, cached_results = cached
+            if datetime.now() - cache_time < _CACHE_DURATION:
+                helper.log_json("INFO", "KB_CACHE_HIT",
+                               category=category,
+                               cacheAge=(datetime.now() - cache_time).seconds,
+                               numResults=len(cached_results))
+                return cached_results
 
     category_queries = {
         "compliance": "Show assessment examples for compliance criteria including call recording, regulated advice, personal details confirmation, and fees explanation",
@@ -138,10 +164,6 @@ def retrieve_examples_by_category(
 
         results = response.get('retrievalResults', [])
 
-        helper.log_json("INFO", "KB_CATEGORY_RETRIEVAL_SUCCESS",
-                       category=category,
-                       numResults=len(results))
-
         examples = []
         for result in results:
             examples.append({
@@ -151,12 +173,34 @@ def retrieve_examples_by_category(
                 'category': category
             })
 
+        # Log retrieval quality metrics
+        if examples:
+            avg_score = sum(e['score'] for e in examples) / len(examples)
+            total_chars = sum(len(e['content']) for e in examples)
+
+            helper.log_json("INFO", "KB_CATEGORY_RETRIEVAL_SUCCESS",
+                           category=category,
+                           numResults=len(examples),
+                           avgRelevanceScore=round(avg_score, 3),
+                           totalChars=total_chars,
+                           estimatedTokens=total_chars // 4)
+        else:
+            helper.log_json("INFO", "KB_CATEGORY_RETRIEVAL_SUCCESS",
+                           category=category,
+                           numResults=0)
+
+        # Store in cache
+        if use_cache and examples:
+            cache_key = f"{category.lower()}_{max_results}_{kb_id}"
+            _CATEGORY_CACHE[cache_key] = (datetime.now(), examples)
+
         return examples
 
     except Exception as e:
         helper.log_json("ERROR", "KB_CATEGORY_RETRIEVAL_FAILED",
                        category=category,
-                       error=str(e))
+                       error=str(e),
+                       errorType=type(e).__name__)
         return []
 
 
@@ -189,6 +233,48 @@ def format_examples_for_prompt(examples: List[Dict]) -> str:
         formatted += "-" * 60 + "\n\n"
 
     return formatted
+
+
+def clear_cache():
+    """
+    Clear the KB retrieval cache.
+
+    Call this function when:
+    - Knowledge Base content has been updated
+    - You want to force fresh retrievals for testing
+    - Memory cleanup is needed
+    """
+    global _CATEGORY_CACHE
+    _CATEGORY_CACHE.clear()
+    helper.log_json("INFO", "KB_CACHE_CLEARED")
+
+
+def get_cache_stats() -> Dict:
+    """
+    Get statistics about the current cache state.
+
+    Returns:
+        Dict with cache statistics including size, oldest/newest entries
+    """
+    if not _CATEGORY_CACHE:
+        return {
+            'size': 0,
+            'entries': []
+        }
+
+    entries = []
+    for key, (cache_time, results) in _CATEGORY_CACHE.items():
+        age_seconds = (datetime.now() - cache_time).seconds
+        entries.append({
+            'key': key,
+            'age_seconds': age_seconds,
+            'num_results': len(results)
+        })
+
+    return {
+        'size': len(_CATEGORY_CACHE),
+        'entries': entries
+    }
 
 
 def retrieve_and_format_examples(
