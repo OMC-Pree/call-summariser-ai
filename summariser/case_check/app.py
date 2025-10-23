@@ -4,6 +4,7 @@ Performs compliance case checking using Bedrock Claude
 """
 import json
 import boto3
+import os
 from typing import List, Optional, Tuple, Literal
 from pydantic import BaseModel, ValidationError, Field
 from datetime import datetime, timezone
@@ -12,8 +13,34 @@ from utils.error_handler import lambda_error_handler
 from constants import *
 from prompts import CASE_CHECK_PROMPT_TEMPLATE, CASE_CHECK_SYSTEM_MESSAGE, JSON_REPAIR_PROMPT_TEMPLATE, JSON_REPAIR_SYSTEM_MESSAGE
 
+# Import KB retrieval module
+try:
+    from case_check.kb_retrieval import retrieve_and_format_examples
+    KB_ENABLED = True
+except ImportError:
+    KB_ENABLED = False
+    helper.log_json("WARNING", "KB_MODULE_NOT_FOUND", message="Running without Knowledge Base integration")
+
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
+ssm = boto3.client("ssm", region_name=AWS_REGION)
+
+# Get KB configuration from environment
+USE_KB = os.environ.get("USE_KNOWLEDGE_BASE", "true").lower() == "true"
+KB_PARAM_NAME = os.environ.get("KNOWLEDGE_BASE_PARAM_NAME", "/call-summariser/knowledge-base-id")
+
+# Fetch KB ID from Parameter Store (cached for Lambda container lifetime)
+KB_ID = None
+if USE_KB:
+    try:
+        response = ssm.get_parameter(Name=KB_PARAM_NAME, WithDecryption=False)
+        KB_ID = response['Parameter']['Value']
+        helper.log_json("INFO", "KB_ID_LOADED_FROM_PARAMETER_STORE", kb_param_name=KB_PARAM_NAME)
+    except Exception as e:
+        helper.log_json("WARNING", "KB_ID_PARAMETER_NOT_FOUND",
+                       kb_param_name=KB_PARAM_NAME,
+                       error=str(e),
+                       message="Knowledge Base integration will be disabled")
 
 
 def get_transcript_from_s3(s3_key: str) -> str:
@@ -267,8 +294,19 @@ def _repair_case_json_with_llm(meeting_id: str, bad_text: str) -> str:
         return text
 
 
-def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list) -> str:
-    """Build case check prompt"""
+def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list, kb_examples: str = "") -> str:
+    """
+    Build case check prompt with optional KB examples
+
+    Args:
+        meeting_id: Meeting identifier
+        cleaned_transcript: The transcript to assess
+        checks: List of checks to perform
+        kb_examples: Formatted examples from Knowledge Base (optional)
+
+    Returns:
+        Complete prompt string
+    """
     checklist_json = json.dumps(
         {"session_type": "starter_session", "version": "1", "checks": checks},
         ensure_ascii=False,
@@ -278,6 +316,7 @@ def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list) -
         model_version=MODEL_VERSION,
         prompt_version=PROMPT_VERSION,
         checklist_json=checklist_json,
+        kb_examples=kb_examples,
         cleaned_transcript=cleaned_transcript
     )
 
@@ -331,7 +370,7 @@ def lambda_handler(event, context):
     full_transcript = get_transcript_from_s3(transcript_key)
 
     # Use chunking strategy for long transcripts
-    CHUNK_SIZE = 20000  # ~5000 tokens per chunk (larger = fewer API calls)
+    CHUNK_SIZE = 40000  # ~10000 tokens per chunk (larger = fewer API calls, faster overall)
     CHUNK_OVERLAP = 2000  # Larger overlap for compliance safety at boundaries
 
     chunks = chunk_transcript(full_transcript, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
@@ -348,6 +387,43 @@ def lambda_handler(event, context):
                        meetingId=meeting_id,
                        transcript_length=len(full_transcript))
 
+    # Retrieve KB examples once (reuse across all chunks)
+    kb_examples = ""
+    if USE_KB and KB_ENABLED and KB_ID:
+        try:
+            import time
+            kb_start_time = time.time()
+            helper.log_json("INFO", "KB_RETRIEVAL_START", meetingId=meeting_id, kb_id=KB_ID)
+
+            # Get check IDs and descriptions
+            check_ids = [c["id"] for c in STARTER_SESSION_CHECKS]
+            check_descriptions = {c["id"]: c["prompt"] for c in STARTER_SESSION_CHECKS}
+
+            kb_examples = retrieve_and_format_examples(
+                check_ids=check_ids,
+                check_descriptions=check_descriptions,
+                max_per_check=1,
+                kb_id=KB_ID
+            )
+
+            kb_elapsed = time.time() - kb_start_time
+            helper.log_json("INFO", "KB_RETRIEVAL_COMPLETE",
+                          meetingId=meeting_id,
+                          examples_length=len(kb_examples),
+                          kb_retrieval_time_ms=int(kb_elapsed * 1000))
+        except Exception as e:
+            helper.log_json("WARNING", "KB_RETRIEVAL_ERROR",
+                          meetingId=meeting_id,
+                          error=str(e),
+                          message="Continuing without KB examples")
+            kb_examples = ""
+    else:
+        helper.log_json("INFO", "KB_DISABLED",
+                       meetingId=meeting_id,
+                       use_kb=USE_KB,
+                       kb_enabled=KB_ENABLED,
+                       has_kb_id=bool(KB_ID))
+
     # Process each chunk
     chunk_results = []
     truncated_chunks = []
@@ -356,13 +432,13 @@ def lambda_handler(event, context):
                        meetingId=meeting_id,
                        chunk_length=len(chunk))
 
-        # Build prompt for this chunk
-        prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS)
+        # Build prompt for this chunk (with KB examples)
+        prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples)
 
         # Call Bedrock for this chunk
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 8000,
+            "max_tokens": 4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
             "temperature": 0.2,
             "system": CASE_CHECK_SYSTEM_MESSAGE,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],

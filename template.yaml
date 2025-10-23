@@ -22,6 +22,10 @@ Globals:
         CASE_CHECK_SCHEMA_VERSION: "1.0"
         SAVE_TRANSCRIPTS: "true"
         ZOOM_PARAM_PREFIX: "/zoom/s2s"
+        # Knowledge Base Configuration
+        # KNOWLEDGE_BASE_ID is read from Parameter Store at runtime
+        KNOWLEDGE_BASE_PARAM_NAME: "/call-summariser/knowledge-base-id"
+        USE_KNOWLEDGE_BASE: "true"
         # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
         A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
         A2I_PORTAL_URL: ""
@@ -269,6 +273,18 @@ Resources:
                 - bedrock:InvokeModel
               Resource:
                 - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+                - arn:aws:bedrock:eu-west-2::foundation-model/amazon.titan-embed-text-v2:0
+            - Effect: Allow
+              Action:
+                - bedrock:Retrieve
+                - bedrock:RetrieveAndGenerate
+              Resource:
+                - arn:aws:bedrock:eu-west-2:*:knowledge-base/*
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/knowledge-base-id
 
   PersistSummaryFunction:
     Type: AWS::Serverless::Function

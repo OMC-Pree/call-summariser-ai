@@ -5,11 +5,19 @@ import math
 import time
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
+from botocore.config import Config
 import boto3
 from constants import AWS_REGION
 
-# AWS client
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+# AWS client with timeout configuration
+# read_timeout: Maximum time to wait for Bedrock to return a response (important for long inference)
+# connect_timeout: Maximum time to wait for connection to Bedrock
+bedrock_config = Config(
+    read_timeout=180,  # 3 minutes max for Bedrock inference per chunk
+    connect_timeout=10,
+    retries={'max_attempts': 0}  # We handle retries manually in bedrock_infer()
+)
+bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION, config=bedrock_config)
 
 def strip_code_fences(s: str) -> str:
     # remove ```json ... ``` or ``` ... ```

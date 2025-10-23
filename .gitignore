@@ -249,6 +249,10 @@ samconfig.toml
 .env
 .env.local
 
+# AWS Parameter Store values (keep sensitive IDs out of version control)
+**/kb-config.json
+kb-*.txt
+
 # IDE and tool-specific files
 .vscode/
 .claude/
@@ -256,5 +260,9 @@ samconfig.toml
 # Not ready for commit
 DATA_ARCHITECTURE.md
 evals/
+
+# Documentation
+docs/*
+kb-docs/*
 
 # End of https://www.gitignore.io/api/osx,linux,python,windows,pycharm,visualstudiocode

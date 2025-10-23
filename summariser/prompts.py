@@ -39,6 +39,7 @@ Transcript:
 CASE_CHECK_PROMPT_TEMPLATE = """You are auditing a financial coaching call against a checklist.
 Return STRICT JSON only. Do NOT include any preface, headings, or code fences.
 The FIRST character of your response must be '{{' and the LAST must be '}}'.
+
 Schema:
 {{
   "check_schema_version": "1.0",
@@ -48,23 +49,44 @@ Schema:
   "model_version": string,
   "prompt_version": string,
   "results": [
-    {{"id": string, "status": "Pass" | "Fail" | "NotApplicable" | "Inconclusive", "confidence": number (0-1), "evidence_spans": [[start,end]], "evidence_quote": string, "comment": string}}
+    {{"id": string, "status": "Competent" | "CompetentWithDevelopment" | "Fail" | "NotApplicable" | "Inconclusive", "confidence": number (0-1), "evidence_spans": [[start,end]], "evidence_quote": string, "comment": string}}
   ],
   "overall": {{"pass_rate": number, "failed_ids": [string], "high_severity_flags": [string]}}
 }}
-RULES:
-- Use 'Pass' only when the coach clearly fulfilled the requirement.
-- Use 'Fail' when the requirement was missed, incorrect, or explicitly prohibited.
-- Use 'NotApplicable' if the check does not apply to this session.
-- Use 'Inconclusive' if there's not enough evidence to make a judgment.
-- Set 'evidence_quote' and 'comment' to empty string ('') if unavailable.
-- If the coach gives regulated financial advice (e.g., specific product or investment recommendations), this is NOT permitted — set `regulated_advice_given` to 'Fail'.
 
+STATUS DEFINITIONS:
+- "Competent": The coach fully met the requirement with clear evidence. This is the standard for good performance.
+- "CompetentWithDevelopment": The coach met the requirement but there are areas for improvement. The core requirement was satisfied but execution could be better.
+- "Fail": The requirement was missed, incorrect, explicitly prohibited, or violated compliance rules.
+- "NotApplicable": This check does not apply to this specific session (e.g., client is not over 50 for age-specific checks).
+- "Inconclusive": Insufficient evidence to make a clear judgment.
+
+ASSESSMENT RULES:
+- Use 'Competent' when the coach clearly fulfilled the requirement with good quality evidence.
+- Use 'CompetentWithDevelopment' when the requirement was met but could be improved (e.g., brief confirmation instead of thorough discussion).
+- Use 'Fail' when the requirement was missed, incorrect, or explicitly prohibited (like giving regulated advice or steering).
+- Use 'NotApplicable' if the check does not apply to this session.
+- Use 'Inconclusive' only if there's genuinely not enough evidence to make a judgment.
+
+EVIDENCE & COMMENTS:
+- Always provide specific evidence quotes from the transcript when available.
+- Evidence quotes should be actual dialogue excerpts, not summaries.
+- Comments should explain WHY you assigned the status and what could be improved (for CompetentWithDevelopment) or what went wrong (for Fail).
+- Set 'evidence_quote' and 'comment' to empty string ('') only if truly unavailable.
+
+COMPLIANCE VIOLATIONS:
+- If the coach gives regulated financial advice (specific product recommendations) → 'Fail'
+- If the coach uses steering language ("the best route", "you should", "I would do") → 'Fail'
+- If high-severity compliance items are missed → 'Fail'
+
+METADATA:
 - Set meeting_id EXACTLY to "{meeting_id}".
 - Set model_version EXACTLY to "{model_version}".
 - Set prompt_version EXACTLY to "{prompt_version}".
 - "evidence_quote" and "comment" must be strings; if unavailable use "" (empty string), not null.
 - If any other value is unknown, use null (not placeholders like "[REDACTED]").
+
+{kb_examples}
 
 CHECKLIST:
 {checklist_json}
