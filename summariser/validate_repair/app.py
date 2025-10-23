@@ -9,7 +9,7 @@ from pydantic import BaseModel, ValidationError, Field
 from utils import helper
 from utils.error_handler import lambda_error_handler
 from constants import *
-from prompts import JSON_REPAIR_PROMPT_TEMPLATE, JSON_REPAIR_SYSTEM_MESSAGE
+# JSON repair prompts no longer needed with structured output
 
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
@@ -41,50 +41,7 @@ class ClaudeResponse(BaseModel):
     themes: List[ThemeItem] = Field(default_factory=list)
 
 
-def _extract_json_object(text: str) -> str:
-    """
-    Extract the first top-level {...} JSON object from text.
-    Uses proper brace counting to handle nested structures correctly.
-    """
-    if not text:
-        raise ValueError("Empty model output")
-    t = text.strip()
-
-    start = t.find("{")
-    if start == -1:
-        raise ValueError("No JSON object found in model output")
-
-    brace_count = 0
-    in_string = False
-    escaped = False
-
-    for i in range(start, len(t)):
-        char = t[i]
-
-        if escaped:
-            escaped = False
-            continue
-
-        if char == '\\' and in_string:
-            escaped = True
-            continue
-
-        if char == '"' and not escaped:
-            in_string = not in_string
-            continue
-
-        if not in_string:
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    return t[start:i+1]
-
-    incomplete_text = t[start:]
-    if len(incomplete_text) < 20 or not incomplete_text.strip().startswith('{'):
-        return t
-    return incomplete_text
+# _extract_json_object and _repair_json_with_llm removed - no longer needed with structured output
 
 
 def _save_validated_to_s3(meeting_id: str, validated_data: dict) -> str:
@@ -109,38 +66,13 @@ def _save_validated_to_s3(meeting_id: str, validated_data: dict) -> str:
     return validated_key
 
 
-def _repair_json_with_llm(meeting_id: str, bad_text: str) -> str:
-    """
-    Ask the model to repair malformed JSON.
-    Returns a JSON string (not dict). Raises on failure.
-    """
-    repair_prompt = JSON_REPAIR_PROMPT_TEMPLATE.format(bad_json=bad_text)
-    messages = [{"role": "user", "content": [{"text": repair_prompt}]}]
-
-    resp, latency_ms = helper.bedrock_converse(
-        model_id=MODEL_ID,
-        messages=messages,
-        system=JSON_REPAIR_SYSTEM_MESSAGE,
-        max_tokens=1200,
-        temperature=0.0
-    )
-
-    helper.log_json("INFO", "LLM_REPAIR_OK", meetingId=meeting_id, latency_ms=latency_ms)
-
-    output_message = resp.get("output", {}).get("message", {})
-    content_blocks = output_message.get("content", [])
-    text = "".join([b.get("text", "") for b in content_blocks if "text" in b]).strip()
-
-    try:
-        return _extract_json_object(text)
-    except Exception:
-        return text
-
-
 @lambda_error_handler()
 def lambda_handler(event, context):
     """
-    Validate and repair LLM JSON output.
+    Validate LLM JSON output (simplified for structured output via Tool Use).
+
+    Since we now use Tool Use for structured output, the JSON is guaranteed to be valid.
+    This function now simply validates with Pydantic and saves to S3.
 
     Input:
         - summaryKey: str (S3 key to raw LLM output)
@@ -161,18 +93,18 @@ def lambda_handler(event, context):
     if not meeting_id:
         raise ValueError("meetingId is required")
 
-    # Load raw response from S3
+    # Load structured output from S3
     helper.log_json("INFO", "LOADING_SUMMARY_FROM_S3", meetingId=meeting_id, summaryKey=summary_key)
     response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=summary_key)
     raw_response = response['Body'].read().decode('utf-8')
 
-    helper.log_json("INFO", "VALIDATING", meetingId=meeting_id, validationType=validation_type)
+    helper.log_json("INFO", "VALIDATING_STRUCTURED_OUTPUT", meetingId=meeting_id, validationType=validation_type)
 
-    # Try to validate directly
+    # With Tool Use, JSON is already validated by the API
+    # Just parse and validate with Pydantic for type safety
     try:
-        cleaned_json = _extract_json_object(raw_response)
-        validated = ClaudeResponse.model_validate_json(cleaned_json)
-        helper.log_json("INFO", "VALIDATION_SUCCESS_DIRECT", meetingId=meeting_id)
+        validated = ClaudeResponse.model_validate_json(raw_response)
+        helper.log_json("INFO", "VALIDATION_SUCCESS", meetingId=meeting_id)
 
         validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
         return {
@@ -180,63 +112,9 @@ def lambda_handler(event, context):
             "isValid": True
         }
     except ValidationError as e:
-        helper.log_json("WARN", "VALIDATION_FAILED_FIRST_ATTEMPT", meetingId=meeting_id, error=str(e)[:200])
-
-    # Try stripping code fences
-    try:
-        cleaned = helper.strip_code_fences(raw_response)
-        validated = ClaudeResponse.model_validate_json(cleaned)
-        helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_STRIP", meetingId=meeting_id)
-
-        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
-        return {
-            "validatedDataKey": validated_key,
-            "isValid": True
-        }
-    except ValidationError as e:
-        helper.log_json("WARN", "VALIDATION_FAILED_AFTER_STRIP", meetingId=meeting_id, error=str(e)[:200])
-
-    # Try extracting JSON object
-    try:
-        extracted = _extract_json_object(raw_response)
-        validated = ClaudeResponse.model_validate_json(extracted)
-        helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_EXTRACT", meetingId=meeting_id)
-
-        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
-        return {
-            "validatedDataKey": validated_key,
-            "isValid": True
-        }
-    except ValidationError as e:
-        helper.log_json("WARN", "VALIDATION_FAILED_AFTER_EXTRACT", meetingId=meeting_id, error=str(e)[:200])
-
-    # Last resort: LLM repair
-    try:
-        from datetime import datetime, timezone
-
-        # Save raw for debugging in supplementary folder
-        if ATHENA_PARTITIONED:
-            now = datetime.now(timezone.utc)
-            raw_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/model_raw.txt"
-        else:
-            raw_key = f"{S3_PREFIX}/supplementary/{meeting_id}/model_raw.txt"
-
-        s3.put_object(
-            Bucket=SUMMARY_BUCKET,
-            Key=raw_key,
-            Body=raw_response.encode("utf-8"),
-            ContentType="text/plain",
-        )
-
-        repaired = _repair_json_with_llm(meeting_id, raw_response)
-        validated = ClaudeResponse.model_validate_json(repaired)
-        helper.log_json("INFO", "VALIDATION_SUCCESS_AFTER_REPAIR", meetingId=meeting_id)
-
-        validated_key = _save_validated_to_s3(meeting_id, validated.model_dump())
-        return {
-            "validatedDataKey": validated_key,
-            "isValid": True
-        }
-    except Exception as e:
-        helper.log_json("ERROR", "VALIDATION_FAILED_ALL_ATTEMPTS", meetingId=meeting_id, error=str(e)[:500])
-        raise ValueError(f"Failed to validate JSON after all repair attempts: {str(e)[:200]}")
+        # This should never happen with Tool Use, but handle gracefully
+        helper.log_json("ERROR", "VALIDATION_FAILED_UNEXPECTED",
+                       meetingId=meeting_id,
+                       error=str(e)[:500],
+                       message="Structured output validation failed - this should not happen with Tool Use")
+        raise ValueError(f"Unexpected validation failure with structured output: {str(e)[:200]}")

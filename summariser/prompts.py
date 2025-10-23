@@ -12,47 +12,26 @@ JSON_REPAIR_PROMPT_VERSION = "2025-09-25-a"
 
 # Summary Generation Prompt
 SUMMARY_PROMPT_TEMPLATE = """You are a financial assistant summarizing a customer coaching call.
-Return ONLY a single JSON object. Do not add any explanation, preface, or markdown fences.
-The JSON must follow this format exactly:
-{
-  "summary": string,
-  "key_points": [string],
-  "action_items": [ { "description": string } ],
-  "sentiment_analysis": {
-    "label": "Positive" | "Neutral" | "Negative",
-    "confidence": number (0-1)
-  },
-  "themes": [
-     { "id": string, "label": string, "group": string, "confidence": number (0-1), "evidence_quote": string | null }
-  ]
-}
+
+Analyze the transcript and use the submit_call_summary tool to provide:
+- A concise summary of the call
+- Key discussion points (as an array of strings)
+- Action items with descriptions
+- Sentiment analysis (Positive/Neutral/Negative with confidence)
+- Identified themes (0-7 themes from: Budgeting, ISA, Mortgage, Pension, Protection, Debt, etc.)
+
 Rules:
-- Use British English and GBP where relevant.
-- Pick 0–7 themes from a controlled list (Budgeting, ISA, Mortgage, Pension, Protection, Debt, etc.).
-- Only include a theme if clearly supported by transcript.
-- Provide short evidence quotes when possible.
+- Use British English and GBP where relevant
+- Only include themes clearly supported by the transcript
+- Provide short evidence quotes when possible
 
 Transcript:
 {transcript}"""
 
 # Case Check Prompt Template
 CASE_CHECK_PROMPT_TEMPLATE = """You are auditing a financial coaching call against a checklist.
-Return STRICT JSON only. Do NOT include any preface, headings, or code fences.
-The FIRST character of your response must be '{{' and the LAST must be '}}'.
 
-Schema:
-{{
-  "check_schema_version": "1.0",
-  "session_type": "starter_session",
-  "checklist_version": "1",
-  "meeting_id": string,
-  "model_version": string,
-  "prompt_version": string,
-  "results": [
-    {{"id": string, "status": "Competent" | "CompetentWithDevelopment" | "Fail" | "NotApplicable" | "Inconclusive", "confidence": number (0-1), "evidence_spans": [[start,end]], "evidence_quote": string, "comment": string}}
-  ],
-  "overall": {{"pass_rate": number, "failed_ids": [string], "high_severity_flags": [string]}}
-}}
+Use the submit_case_check tool to provide your assessment.
 
 STATUS DEFINITIONS:
 - "Competent": The coach fully met the requirement with clear evidence. This is the standard for good performance.
@@ -102,8 +81,8 @@ JSON_REPAIR_PROMPT_TEMPLATE = """The following is intended to be a JSON object m
 ----- END -----"""
 
 # System Messages
-SUMMARY_SYSTEM_MESSAGE = "Output ONLY one JSON object that starts with '{' and ends with '}'. No preface. No code fences."
+SUMMARY_SYSTEM_MESSAGE = "You are a financial assistant that summarizes coaching calls. Always use the provided tool to structure your response."
 
-CASE_CHECK_SYSTEM_MESSAGE = "Output ONLY one JSON object that starts with '{' and ends with '}'. No preface. No code fences."
+CASE_CHECK_SYSTEM_MESSAGE = "You are a compliance auditor. Always use the provided tool to structure your assessment results."
 
 JSON_REPAIR_SYSTEM_MESSAGE = "You are a strict JSON fixer. Output ONLY valid JSON. No extra text."

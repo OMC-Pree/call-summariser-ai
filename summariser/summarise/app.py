@@ -14,6 +14,83 @@ bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
 
 
+def get_summary_tool():
+    """
+    Create a tool definition for structured summary output.
+    This ensures the LLM returns valid JSON matching our expected schema.
+    """
+    return {
+        "toolSpec": {
+            "name": "submit_call_summary",
+            "description": "Submit the call summary with all required fields",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Overall summary of the call"
+                        },
+                        "key_points": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of key discussion points"
+                        },
+                        "action_items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "description": {"type": "string"}
+                                },
+                                "required": ["description"]
+                            },
+                            "description": "Action items from the call"
+                        },
+                        "sentiment_analysis": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string",
+                                    "enum": ["Positive", "Neutral", "Negative"]
+                                },
+                                "confidence": {
+                                    "type": "number",
+                                    "minimum": 0.0,
+                                    "maximum": 1.0
+                                }
+                            },
+                            "required": ["label", "confidence"]
+                        },
+                        "themes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "label": {"type": "string"},
+                                    "group": {"type": "string"},
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0
+                                    },
+                                    "evidence_quote": {
+                                        "type": ["string", "null"]
+                                    }
+                                },
+                                "required": ["id", "label", "group", "confidence"]
+                            },
+                            "description": "Identified themes from the call (0-7 themes)"
+                        }
+                    },
+                    "required": ["summary", "key_points", "action_items", "sentiment_analysis", "themes"]
+                }
+            }
+        }
+    }
+
+
 def get_transcript_from_s3(s3_key: str) -> str:
     """Fetch transcript from S3"""
     response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=s3_key)
@@ -55,10 +132,13 @@ def lambda_handler(event, context):
     # Build prompt
     prompt = build_prompt(transcript)
 
-    # Call Bedrock using Converse API
+    # Call Bedrock using Converse API with structured output
     messages = [
         {"role": "user", "content": [{"text": prompt}]}
     ]
+
+    # Get tool definition for guaranteed JSON schema
+    summary_tool = get_summary_tool()
 
     helper.log_json("INFO", "CALLING_BEDROCK", meetingId=meeting_id, prompt_length=len(prompt))
 
@@ -67,16 +147,29 @@ def lambda_handler(event, context):
         messages=messages,
         system=SUMMARY_SYSTEM_MESSAGE,
         max_tokens=1200,
-        temperature=0.3
+        temperature=0.3,
+        tools=[summary_tool]  # Force structured output
     )
 
     helper.log_json("INFO", "BEDROCK_CALL_SUCCESS", meetingId=meeting_id, latency_ms=latency_ms)
 
-    # Parse response
+    # Extract structured output from tool use
     output_message = resp.get("output", {}).get("message", {})
     content_blocks = output_message.get("content", [])
-    text_blocks = [b.get("text", "") for b in content_blocks if "text" in b]
-    raw_text = "".join(text_blocks)
+
+    # Find the tool use block
+    tool_use_block = None
+    for block in content_blocks:
+        if "toolUse" in block:
+            tool_use_block = block["toolUse"]
+            break
+
+    if not tool_use_block:
+        raise ValueError("No tool use block found in response")
+
+    # Get validated JSON from tool input
+    validated_json = tool_use_block["input"]
+    raw_text = json.dumps(validated_json)
 
     # Log usage metrics from Converse API
     usage = resp.get("usage", {})

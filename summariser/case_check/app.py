@@ -6,12 +6,12 @@ import json
 import boto3
 import os
 from typing import List, Optional, Tuple, Literal
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from utils import helper
 from utils.error_handler import lambda_error_handler
 from constants import *
-from prompts import CASE_CHECK_PROMPT_TEMPLATE, CASE_CHECK_SYSTEM_MESSAGE, JSON_REPAIR_PROMPT_TEMPLATE, JSON_REPAIR_SYSTEM_MESSAGE
+from prompts import CASE_CHECK_PROMPT_TEMPLATE, CASE_CHECK_SYSTEM_MESSAGE
 
 # Import KB retrieval module
 try:
@@ -203,6 +203,83 @@ class CaseCheckPayload(BaseModel):
     overall: dict
 
 
+# ---------- Tool definition for structured output ----------
+def get_case_check_tool():
+    """
+    Create a tool definition for structured case check output.
+    This ensures the LLM returns valid JSON matching our Pydantic schema.
+    """
+    return {
+        "toolSpec": {
+            "name": "submit_case_check",
+            "description": "Submit the case check assessment results with all checks evaluated",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "check_schema_version": {"type": "string"},
+                        "session_type": {"type": "string"},
+                        "checklist_version": {"type": "string"},
+                        "meeting_id": {"type": "string"},
+                        "model_version": {"type": "string"},
+                        "prompt_version": {"type": "string"},
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string", "description": "Check identifier"},
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["Competent", "CompetentWithDevelopment", "Fail", "NotApplicable", "Inconclusive"],
+                                        "description": "Assessment status"
+                                    },
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0,
+                                        "description": "Confidence score 0-1"
+                                    },
+                                    "evidence_spans": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "array",
+                                            "items": {"type": "integer"},
+                                            "minItems": 2,
+                                            "maxItems": 2
+                                        },
+                                        "description": "List of [start, end] character positions"
+                                    },
+                                    "evidence_quote": {
+                                        "type": "string",
+                                        "description": "Direct quote from transcript"
+                                    },
+                                    "comment": {
+                                        "type": "string",
+                                        "description": "Assessment comment"
+                                    }
+                                },
+                                "required": ["id", "status", "confidence"]
+                            }
+                        },
+                        "overall": {
+                            "type": "object",
+                            "properties": {
+                                "pass_rate": {"type": "number"},
+                                "failed_ids": {"type": "array", "items": {"type": "string"}},
+                                "high_severity_flags": {"type": "array", "items": {"type": "string"}},
+                                "has_high_severity_failures": {"type": "boolean"}
+                            }
+                        }
+                    },
+                    "required": ["check_schema_version", "session_type", "checklist_version",
+                                 "meeting_id", "model_version", "prompt_version", "results", "overall"]
+                }
+            }
+        }
+    }
+
+
 STARTER_SESSION_CHECKS = [
     # Compliance Criteria
     {"id": "call_recording_confirmed", "prompt": "Call recording confirmed? Did the coach confirm that the call is being recorded for training and compliance purposes?", "required": True, "severity": "high"},
@@ -235,65 +312,7 @@ STARTER_SESSION_CHECKS = [
 ]
 
 
-def _extract_json_object(text: str) -> str:
-    """Extract first top-level JSON object from text"""
-    if not text:
-        raise ValueError("Empty model output")
-    t = text.strip()
-
-    start = t.find("{")
-    if start == -1:
-        raise ValueError("No JSON object found")
-
-    brace_count = 0
-    in_string = False
-    escaped = False
-
-    for i in range(start, len(t)):
-        char = t[i]
-        if escaped:
-            escaped = False
-            continue
-        if char == '\\' and in_string:
-            escaped = True
-            continue
-        if char == '"' and not escaped:
-            in_string = not in_string
-            continue
-        if not in_string:
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    return t[start:i+1]
-
-    return t[start:] if len(t[start:]) >= 20 else t
-
-
-def _repair_case_json_with_llm(meeting_id: str, bad_text: str) -> str:
-    """Ask LLM to repair malformed JSON"""
-    repair_prompt = JSON_REPAIR_PROMPT_TEMPLATE.format(bad_json=bad_text)
-    messages = [{"role": "user", "content": [{"text": repair_prompt}]}]
-
-    resp, latency_ms = helper.bedrock_converse(
-        model_id=MODEL_ID,
-        messages=messages,
-        system=JSON_REPAIR_SYSTEM_MESSAGE,
-        max_tokens=1200,
-        temperature=0.0
-    )
-
-    helper.log_json("INFO", "LLM_REPAIR_OK", meetingId=meeting_id, latency_ms=latency_ms)
-
-    output_message = resp.get("output", {}).get("message", {})
-    content_blocks = output_message.get("content", [])
-    text = "".join([b.get("text", "") for b in content_blocks if "text" in b]).strip()
-
-    try:
-        return _extract_json_object(text)
-    except Exception:
-        return text
+# JSON repair and extraction functions removed - no longer needed with structured output via Tool Use
 
 
 def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list, kb_examples: str = "") -> str:
@@ -437,20 +456,37 @@ def lambda_handler(event, context):
         # Build prompt for this chunk (with KB examples)
         prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples)
 
-        # Call Bedrock for this chunk using Converse API
+        # Call Bedrock for this chunk using Converse API with structured output
         messages = [{"role": "user", "content": [{"text": prompt}]}]
+
+        # Get tool definition for guaranteed JSON schema
+        case_check_tool = get_case_check_tool()
 
         resp, latency_ms = helper.bedrock_converse(
             model_id=MODEL_ID,
             messages=messages,
             system=CASE_CHECK_SYSTEM_MESSAGE,
             max_tokens=4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
-            temperature=0.2
+            temperature=0.2,
+            tools=[case_check_tool]  # Force structured output
         )
 
+        # Extract structured output from tool use
         output_message = resp.get("output", {}).get("message", {})
         content_blocks = output_message.get("content", [])
-        text = "".join([b.get("text", "") for b in content_blocks if "text" in b])
+
+        # Find the tool use block
+        tool_use_block = None
+        for block in content_blocks:
+            if "toolUse" in block:
+                tool_use_block = block["toolUse"]
+                break
+
+        if not tool_use_block:
+            raise ValueError(f"No tool use block found in response for chunk {idx + 1}")
+
+        # Get validated JSON from tool input
+        validated_json = tool_use_block["input"]
 
         # Check if response was truncated
         stop_reason = resp.get("stopReason")
@@ -468,23 +504,11 @@ def lambda_handler(event, context):
                        latency_ms=latency_ms,
                        stop_reason=stop_reason,
                        input_tokens=usage.get("inputTokens", 0),
-                       output_tokens=usage.get("outputTokens", 0))
+                       output_tokens=usage.get("outputTokens", 0),
+                       structured_output=True)
 
-        # Parse and validate chunk result
-        try:
-            parsed = CaseCheckPayload.model_validate_json(text)
-        except ValidationError:
-            try:
-                cleaned = helper.strip_code_fences(text)
-                parsed = CaseCheckPayload.model_validate_json(cleaned)
-            except ValidationError:
-                try:
-                    extracted = _extract_json_object(text)
-                    parsed = CaseCheckPayload.model_validate_json(extracted)
-                except ValidationError:
-                    repaired = _repair_case_json_with_llm(meeting_id, text)
-                    parsed = CaseCheckPayload.model_validate_json(repaired)
-
+        # Validate with Pydantic (should always succeed with tool use)
+        parsed = CaseCheckPayload.model_validate(validated_json)
         chunk_results.append(parsed.model_dump())
 
     # Merge results from all chunks

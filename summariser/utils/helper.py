@@ -1,7 +1,5 @@
 import json
-import re
 import random
-import math
 import time
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
@@ -19,33 +17,7 @@ bedrock_config = Config(
 )
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION, config=bedrock_config)
 
-def strip_code_fences(s: str) -> str:
-    # remove ```json ... ``` or ``` ... ```
-    s = s.strip()
-    fence = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.S | re.I)
-    m = fence.match(s)
-    return m.group(1) if m else s
-
-def extract_first_json(s: str) -> str:
-    """
-    Return the first balanced {...} JSON object found in s.
-    Handles leading prose and trailing notes.
-    """
-    s = strip_code_fences(s)
-    start = s.find("{")
-    if start == -1:
-        return s.strip()
-    depth = 0
-    for i in range(start, len(s)):
-        c = s[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return s[start:i+1].strip()
-    # if unbalanced, fallback to original
-    return s[start:].strip()
+# strip_code_fences and extract_first_json removed - no longer needed with structured output
 
 def log_json(level: str, msg: str, **kwargs):
     """
@@ -84,6 +56,8 @@ def bedrock_converse(
     system: str = None,
     max_tokens: int = 4096,
     temperature: float = 0.0,
+    tools: list = None,
+    tool_choice: dict = None,
     tries: int = 5,
     base: float = 0.6,
     max_sleep: float = 6.0
@@ -97,6 +71,8 @@ def bedrock_converse(
         system: Optional system prompt string
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
+        tools: Optional list of tool definitions for structured output
+        tool_choice: Optional tool choice configuration (e.g., {"auto": {}} or {"tool": {"name": "tool_name"}})
         tries: Number of retry attempts
         base: Base delay for exponential backoff
         max_sleep: Maximum sleep duration
@@ -122,6 +98,19 @@ def bedrock_converse(
             # Add system prompt if provided
             if system:
                 request_params["system"] = [{"text": system}]
+
+            # Add tools if provided (for structured output)
+            if tools:
+                request_params["toolConfig"] = {"tools": tools}
+
+                # Add tool choice if specified, otherwise force tool use
+                if tool_choice:
+                    request_params["toolConfig"]["toolChoice"] = tool_choice
+                elif len(tools) == 1:
+                    # If only one tool, force its use for guaranteed structured output
+                    request_params["toolConfig"]["toolChoice"] = {
+                        "tool": {"name": tools[0]["toolSpec"]["name"]}
+                    }
 
             # Call Converse API
             resp = bedrock.converse(**request_params)
