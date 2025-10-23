@@ -68,7 +68,10 @@ def bedrock_converse(
     Args:
         model_id: Bedrock model ID
         messages: List of message dicts with 'role' and 'content'
-        system: Optional system prompt string
+        system: Optional system prompt - can be string or list of system blocks
+                String: Simple text system prompt
+                List: System blocks with optional cache control, e.g.:
+                      [{"text": "...", "cacheControl": {"type": "ephemeral"}}]
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
         tools: Optional list of tool definitions for structured output
@@ -97,7 +100,13 @@ def bedrock_converse(
 
             # Add system prompt if provided
             if system:
-                request_params["system"] = [{"text": system}]
+                # Support both string and list formats
+                if isinstance(system, str):
+                    request_params["system"] = [{"text": system}]
+                elif isinstance(system, list):
+                    request_params["system"] = system
+                else:
+                    raise ValueError(f"system must be str or list, got {type(system)}")
 
             # Add tools if provided (for structured output)
             if tools:

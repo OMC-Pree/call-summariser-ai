@@ -453,8 +453,8 @@ def lambda_handler(event, context):
                        meetingId=meeting_id,
                        chunk_length=len(chunk))
 
-        # Build prompt for this chunk (with KB examples)
-        prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples)
+        # Build prompt for this chunk (without KB examples - moved to system)
+        prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples="")
 
         # Call Bedrock for this chunk using Converse API with structured output
         messages = [{"role": "user", "content": [{"text": prompt}]}]
@@ -462,10 +462,16 @@ def lambda_handler(event, context):
         # Get tool definition for guaranteed JSON schema
         case_check_tool = get_case_check_tool()
 
+        # Build system prompt with KB examples
+        # Note: Prompt caching disabled - not available in eu-west-2 region yet
+        system_message = CASE_CHECK_SYSTEM_MESSAGE
+        if kb_examples:
+            system_message += f"\n\nREFERENCE EXAMPLES:\n{kb_examples}"
+
         resp, latency_ms = helper.bedrock_converse(
             model_id=MODEL_ID,
             messages=messages,
-            system=CASE_CHECK_SYSTEM_MESSAGE,
+            system=system_message,  # Pass as string (no caching)
             max_tokens=4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
             temperature=0.2,
             tools=[case_check_tool]  # Force structured output
@@ -499,13 +505,26 @@ def lambda_handler(event, context):
             # Continue with partial results instead of failing
 
         usage = resp.get("usage", {})
-        helper.log_json("INFO", f"CHUNK_{idx + 1}_LLM_OK",
-                       meetingId=meeting_id,
-                       latency_ms=latency_ms,
-                       stop_reason=stop_reason,
-                       input_tokens=usage.get("inputTokens", 0),
-                       output_tokens=usage.get("outputTokens", 0),
-                       structured_output=True)
+
+        # Log with cache metrics for cost tracking
+        log_data = {
+            "meetingId": meeting_id,
+            "latency_ms": latency_ms,
+            "stop_reason": stop_reason,
+            "input_tokens": usage.get("inputTokens", 0),
+            "output_tokens": usage.get("outputTokens", 0),
+            "structured_output": True
+        }
+
+        # Add cache metrics if available (only present when using prompt caching)
+        if "cacheReadInputTokens" in usage:
+            log_data["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
+            log_data["cache_creation_tokens"] = usage.get("cacheCreationInputTokens", 0)
+            # Calculate cost savings (cache reads are 90% cheaper)
+            cache_savings = usage.get("cacheReadInputTokens", 0) * 0.9
+            log_data["estimated_cache_savings_tokens"] = int(cache_savings)
+
+        helper.log_json("INFO", f"CHUNK_{idx + 1}_LLM_OK", **log_data)
 
         # Validate with Pydantic (should always succeed with tool use)
         parsed = CaseCheckPayload.model_validate(validated_json)

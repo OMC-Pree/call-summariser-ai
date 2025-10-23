@@ -113,8 +113,40 @@ def lambda_handler(event, context):
         }
     except ValidationError as e:
         # This should never happen with Tool Use, but handle gracefully
+        # Log the actual response to debug
         helper.log_json("ERROR", "VALIDATION_FAILED_UNEXPECTED",
                        meetingId=meeting_id,
                        error=str(e)[:500],
+                       raw_response_preview=raw_response[:500],
                        message="Structured output validation failed - this should not happen with Tool Use")
-        raise ValueError(f"Unexpected validation failure with structured output: {str(e)[:200]}")
+
+        # Always try to save and return a key to avoid breaking the workflow
+        try:
+            # Parse the JSON (might be valid JSON but wrong schema)
+            data = json.loads(raw_response)
+        except json.JSONDecodeError:
+            # If even JSON parsing fails, create minimal valid response
+            helper.log_json("ERROR", "INVALID_JSON_IN_RESPONSE",
+                           meetingId=meeting_id,
+                           message="Response is not valid JSON")
+            data = {
+                "summary": "Error: Invalid response from LLM",
+                "key_points": [],
+                "action_items": [],
+                "sentiment_analysis": {"label": "Neutral", "confidence": 0.0},
+                "themes": [],
+                "error": str(e)[:200]
+            }
+
+        # Save whatever we have
+        validated_key = _save_validated_to_s3(meeting_id, data)
+        helper.log_json("WARNING", "SAVED_DESPITE_VALIDATION_ERROR",
+                       meetingId=meeting_id,
+                       validatedKey=validated_key)
+
+        # Always return a valid response to avoid breaking the workflow
+        return {
+            "validatedDataKey": validated_key,
+            "isValid": False,
+            "validationError": str(e)[:200]
+        }

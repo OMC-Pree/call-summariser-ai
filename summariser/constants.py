@@ -11,8 +11,9 @@ DEFAULT_REGION = "eu-west-2"
 AWS_REGION = os.getenv("AWS_REGION", DEFAULT_REGION)
 
 # Model Configuration
-DEFAULT_MODEL_VERSION = "bedrock:claude-3-sonnet-20240229"
-DEFAULT_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
+# Using Claude 3.5 Sonnet v2 (latest) - supports prompt caching for 90% cost savings
+DEFAULT_MODEL_VERSION = "bedrock:claude-3-5-sonnet-20241022"
+DEFAULT_MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 DEFAULT_PROMPT_VERSION = "2025-09-22-a"
 DEFAULT_INSIGHTS_VERSION = "2025-08-30-a"
 DEFAULT_SCHEMA_VERSION = "1.2"

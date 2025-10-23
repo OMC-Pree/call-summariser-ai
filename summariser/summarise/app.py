@@ -79,7 +79,7 @@ def get_summary_tool():
                                         "type": ["string", "null"]
                                     }
                                 },
-                                "required": ["id", "label", "group", "confidence"]
+                                "required": ["id", "label", "confidence"]
                             },
                             "description": "Identified themes from the call (0-7 themes)"
                         }
@@ -140,12 +140,16 @@ def lambda_handler(event, context):
     # Get tool definition for guaranteed JSON schema
     summary_tool = get_summary_tool()
 
+    # Build system prompt
+    # Note: Prompt caching disabled - not available in eu-west-2 region yet
+    system_message = SUMMARY_SYSTEM_MESSAGE
+
     helper.log_json("INFO", "CALLING_BEDROCK", meetingId=meeting_id, prompt_length=len(prompt))
 
     resp, latency_ms = helper.bedrock_converse(
         model_id=MODEL_ID,
         messages=messages,
-        system=SUMMARY_SYSTEM_MESSAGE,
+        system=system_message,  # Pass as string (no caching)
         max_tokens=1200,
         temperature=0.3,
         tools=[summary_tool]  # Force structured output
@@ -171,18 +175,25 @@ def lambda_handler(event, context):
     validated_json = tool_use_block["input"]
     raw_text = json.dumps(validated_json)
 
-    # Log usage metrics from Converse API
+    # Log usage metrics from Converse API with cache information
     usage = resp.get("usage", {})
-    helper.log_json(
-        "INFO",
-        "LLM_SUMMARY_OK",
-        meetingId=meeting_id,
-        latency_ms=latency_ms,
-        input_tokens=usage.get("inputTokens", 0),
-        output_tokens=usage.get("outputTokens", 0),
-        total_tokens=usage.get("totalTokens", 0),
-        output_chars=len(raw_text),
-    )
+    log_data = {
+        "meetingId": meeting_id,
+        "latency_ms": latency_ms,
+        "input_tokens": usage.get("inputTokens", 0),
+        "output_tokens": usage.get("outputTokens", 0),
+        "total_tokens": usage.get("totalTokens", 0),
+        "output_chars": len(raw_text),
+    }
+
+    # Add cache metrics if available
+    if "cacheReadInputTokens" in usage:
+        log_data["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
+        log_data["cache_creation_tokens"] = usage.get("cacheCreationInputTokens", 0)
+        cache_savings = usage.get("cacheReadInputTokens", 0) * 0.9
+        log_data["estimated_cache_savings_tokens"] = int(cache_savings)
+
+    helper.log_json("INFO", "LLM_SUMMARY_OK", **log_data)
 
     # Save raw summary to supplementary folder for validation step
     if ATHENA_PARTITIONED:
