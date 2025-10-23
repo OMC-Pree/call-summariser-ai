@@ -140,9 +140,24 @@ def retrieve_examples_by_category(
                                numResults=len(cached_results))
                 return cached_results
 
+    # Optimized queries for hybrid (semantic + keyword) search
+    # - Frontload "Pass Fail" for critical context
+    # - Include ALL check keywords for better matching
+    # - Remove generic verbs ("show", "including") that dilute relevance
+    # - Concise = better semantic density
     category_queries = {
-        "compliance": "Show assessment examples for compliance criteria including call recording, regulated advice, personal details confirmation, and fees explanation",
-        "macro": "Show assessment examples for coaching quality criteria including goal establishment, client engagement, and service explanation"
+        "compliance": (
+            "Call assessment Pass Fail examples: "
+            "call recording consent, regulated advice disclosure, vulnerability screening, "
+            "client verification (DOB name marital status citizenship dependents), "
+            "pension income expenditure assets liabilities emergency fund will, "
+            "fees charges explanation, way forward agreement"
+        ),
+        "macro": (
+            "Coaching assessment Pass Fail examples: "
+            "coach introduction signposting, client goals motivations current actions, "
+            "relevant suggestions money calculators, client questions move forward opportunity"
+        )
     }
 
     query = category_queries.get(category.lower(), "")
