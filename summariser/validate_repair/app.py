@@ -115,19 +115,21 @@ def _repair_json_with_llm(meeting_id: str, bad_text: str) -> str:
     Returns a JSON string (not dict). Raises on failure.
     """
     repair_prompt = JSON_REPAIR_PROMPT_TEMPLATE.format(bad_json=bad_text)
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1200,
-        "temperature": 0.0,
-        "system": JSON_REPAIR_SYSTEM_MESSAGE,
-        "messages": [{"role": "user", "content": [{"type": "text", "text": repair_prompt}]}],
-    })
+    messages = [{"role": "user", "content": [{"text": repair_prompt}]}]
 
-    raw_resp, latency_ms = helper.bedrock_infer(MODEL_ID, body)
-    payload = json.loads(raw_resp)
+    resp, latency_ms = helper.bedrock_converse(
+        model_id=MODEL_ID,
+        messages=messages,
+        system=JSON_REPAIR_SYSTEM_MESSAGE,
+        max_tokens=1200,
+        temperature=0.0
+    )
+
     helper.log_json("INFO", "LLM_REPAIR_OK", meetingId=meeting_id, latency_ms=latency_ms)
 
-    text = "".join([b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text"]).strip()
+    output_message = resp.get("output", {}).get("message", {})
+    content_blocks = output_message.get("content", [])
+    text = "".join([b.get("text", "") for b in content_blocks if "text" in b]).strip()
 
     try:
         return _extract_json_object(text)

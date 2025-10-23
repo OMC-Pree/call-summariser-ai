@@ -274,19 +274,21 @@ def _extract_json_object(text: str) -> str:
 def _repair_case_json_with_llm(meeting_id: str, bad_text: str) -> str:
     """Ask LLM to repair malformed JSON"""
     repair_prompt = JSON_REPAIR_PROMPT_TEMPLATE.format(bad_json=bad_text)
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1200,
-        "temperature": 0.0,
-        "system": JSON_REPAIR_SYSTEM_MESSAGE,
-        "messages": [{"role": "user", "content": [{"type": "text", "text": repair_prompt}]}],
-    })
+    messages = [{"role": "user", "content": [{"text": repair_prompt}]}]
 
-    raw_resp, latency_ms = helper.bedrock_infer(MODEL_ID, body)
-    payload = json.loads(raw_resp)
+    resp, latency_ms = helper.bedrock_converse(
+        model_id=MODEL_ID,
+        messages=messages,
+        system=JSON_REPAIR_SYSTEM_MESSAGE,
+        max_tokens=1200,
+        temperature=0.0
+    )
+
     helper.log_json("INFO", "LLM_REPAIR_OK", meetingId=meeting_id, latency_ms=latency_ms)
 
-    text = "".join([b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text"]).strip()
+    output_message = resp.get("output", {}).get("message", {})
+    content_blocks = output_message.get("content", [])
+    text = "".join([b.get("text", "") for b in content_blocks if "text" in b]).strip()
 
     try:
         return _extract_json_object(text)
@@ -435,21 +437,23 @@ def lambda_handler(event, context):
         # Build prompt for this chunk (with KB examples)
         prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples)
 
-        # Call Bedrock for this chunk
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
-            "temperature": 0.2,
-            "system": CASE_CHECK_SYSTEM_MESSAGE,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        })
+        # Call Bedrock for this chunk using Converse API
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
 
-        raw_resp, latency_ms = helper.bedrock_infer(MODEL_ID, body)
-        payload = json.loads(raw_resp)
-        text = "".join([b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text"])
+        resp, latency_ms = helper.bedrock_converse(
+            model_id=MODEL_ID,
+            messages=messages,
+            system=CASE_CHECK_SYSTEM_MESSAGE,
+            max_tokens=4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
+            temperature=0.2
+        )
+
+        output_message = resp.get("output", {}).get("message", {})
+        content_blocks = output_message.get("content", [])
+        text = "".join([b.get("text", "") for b in content_blocks if "text" in b])
 
         # Check if response was truncated
-        stop_reason = payload.get("stop_reason")
+        stop_reason = resp.get("stopReason")
         if stop_reason == "max_tokens":
             truncated_chunks.append(idx + 1)
             helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
@@ -458,10 +462,13 @@ def lambda_handler(event, context):
                            message="Chunk response hit max_tokens - using partial results")
             # Continue with partial results instead of failing
 
+        usage = resp.get("usage", {})
         helper.log_json("INFO", f"CHUNK_{idx + 1}_LLM_OK",
                        meetingId=meeting_id,
                        latency_ms=latency_ms,
-                       stop_reason=stop_reason)
+                       stop_reason=stop_reason,
+                       input_tokens=usage.get("inputTokens", 0),
+                       output_tokens=usage.get("outputTokens", 0))
 
         # Parse and validate chunk result
         try:

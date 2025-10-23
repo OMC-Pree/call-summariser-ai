@@ -15,7 +15,7 @@ from constants import AWS_REGION
 bedrock_config = Config(
     read_timeout=180,  # 3 minutes max for Bedrock inference per chunk
     connect_timeout=10,
-    retries={'max_attempts': 0}  # We handle retries manually in bedrock_infer()
+    retries={'max_attempts': 0}  # We handle retries manually in bedrock_converse()
 )
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION, config=bedrock_config)
 
@@ -78,24 +78,56 @@ def _should_retry_bedrock_error(err: Exception) -> bool:
     # Fallback: no retry
     return False
 
-def bedrock_infer(model_id: str, body: str, tries: int = 5, base: float = 0.6, max_sleep: float = 6.0):
+def bedrock_converse(
+    model_id: str,
+    messages: list,
+    system: str = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.0,
+    tries: int = 5,
+    base: float = 0.6,
+    max_sleep: float = 6.0
+):
     """
-    Invoke Bedrock with exponential backoff + jitter.
-    Returns parsed JSON response body (dict).
+    Invoke Bedrock using Converse API with exponential backoff + jitter.
+
+    Args:
+        model_id: Bedrock model ID
+        messages: List of message dicts with 'role' and 'content'
+        system: Optional system prompt string
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+        tries: Number of retry attempts
+        base: Base delay for exponential backoff
+        max_sleep: Maximum sleep duration
+
+    Returns:
+        Tuple of (response_dict, latency_ms)
+        response_dict contains: output, stopReason, usage, etc.
     """
     last_err = None
     for attempt in range(1, tries + 1):
         t0 = time.perf_counter()
         try:
-            resp = bedrock.invoke_model(
-                modelId=model_id,
-                contentType="application/json",
-                accept="application/json",
-                body=body,
-            )
-            raw = resp["body"].read().decode("utf-8")
+            # Build request parameters
+            request_params = {
+                "modelId": model_id,
+                "messages": messages,
+                "inferenceConfig": {
+                    "maxTokens": max_tokens,
+                    "temperature": temperature,
+                }
+            }
+
+            # Add system prompt if provided
+            if system:
+                request_params["system"] = [{"text": system}]
+
+            # Call Converse API
+            resp = bedrock.converse(**request_params)
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-            return raw, latency_ms
+            return resp, latency_ms
+
         except Exception as e:
             last_err = e
             retryable = _should_retry_bedrock_error(e)
@@ -108,4 +140,6 @@ def bedrock_infer(model_id: str, body: str, tries: int = 5, base: float = 0.6, m
             sleep_s = min(max_sleep, base * (2 ** (attempt - 1))) * (0.7 + 0.6 * random.random())
             time.sleep(sleep_s)
     raise last_err
+
+
 

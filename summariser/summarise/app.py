@@ -55,35 +55,40 @@ def lambda_handler(event, context):
     # Build prompt
     prompt = build_prompt(transcript)
 
-    # Call Bedrock
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1200,
-        "temperature": 0.3,
-        "system": SUMMARY_SYSTEM_MESSAGE,
-        "messages": [
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
-        ],
-    })
+    # Call Bedrock using Converse API
+    messages = [
+        {"role": "user", "content": [{"text": prompt}]}
+    ]
 
-    helper.log_json("INFO", "CALLING_BEDROCK", meetingId=meeting_id, body_length=len(body))
+    helper.log_json("INFO", "CALLING_BEDROCK", meetingId=meeting_id, prompt_length=len(prompt))
 
-    raw_resp, latency_ms = helper.bedrock_infer(MODEL_ID, body)
+    resp, latency_ms = helper.bedrock_converse(
+        model_id=MODEL_ID,
+        messages=messages,
+        system=SUMMARY_SYSTEM_MESSAGE,
+        max_tokens=1200,
+        temperature=0.3
+    )
 
     helper.log_json("INFO", "BEDROCK_CALL_SUCCESS", meetingId=meeting_id, latency_ms=latency_ms)
 
     # Parse response
-    payload = json.loads(raw_resp)
-    text_blocks = [b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text"]
+    output_message = resp.get("output", {}).get("message", {})
+    content_blocks = output_message.get("content", [])
+    text_blocks = [b.get("text", "") for b in content_blocks if "text" in b]
     raw_text = "".join(text_blocks)
 
+    # Log usage metrics from Converse API
+    usage = resp.get("usage", {})
     helper.log_json(
         "INFO",
         "LLM_SUMMARY_OK",
         meetingId=meeting_id,
         latency_ms=latency_ms,
-        input_chars=len(body),
-        output_chars=len(raw_resp),
+        input_tokens=usage.get("inputTokens", 0),
+        output_tokens=usage.get("outputTokens", 0),
+        total_tokens=usage.get("totalTokens", 0),
+        output_chars=len(raw_text),
     )
 
     # Save raw summary to supplementary folder for validation step
@@ -104,12 +109,11 @@ def lambda_handler(event, context):
                    summaryKey=summary_key,
                    size=len(raw_text))
 
-    # Extract token usage from payload
-    usage = payload.get("usage", {})
+    # Token usage already extracted from resp above (usage variable)
     token_usage = {
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-        "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        "input_tokens": usage.get("inputTokens", 0),
+        "output_tokens": usage.get("outputTokens", 0),
+        "total_tokens": usage.get("totalTokens", 0)
     }
 
     return {
