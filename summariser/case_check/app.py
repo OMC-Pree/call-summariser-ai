@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from utils import helper
 from utils.error_handler import lambda_error_handler
+from utils.prompt_management import invoke_with_prompt_management
 from constants import *
-from prompts import CASE_CHECK_PROMPT_TEMPLATE, CASE_CHECK_SYSTEM_MESSAGE
 
 # Import KB retrieval module
 try:
@@ -24,6 +24,13 @@ except ImportError:
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
 ssm = boto3.client("ssm", region_name=AWS_REGION)
+
+# Prompt Management configuration
+USE_PROMPT_MANAGEMENT = os.environ.get("USE_PROMPT_MANAGEMENT", "true").lower() == "true"
+PROMPT_PARAM_NAME = os.environ.get("PROMPT_PARAM_NAME_CASE_CHECK", "/call-summariser/prompts/case-check/current")
+
+# Cache for prompt ARN (loaded once per Lambda container)
+_cached_prompt_arn = None
 
 # Get KB configuration from environment
 USE_KB = os.environ.get("USE_KNOWLEDGE_BASE", "true").lower() == "true"
@@ -41,6 +48,32 @@ if USE_KB:
                        kb_param_name=KB_PARAM_NAME,
                        error=str(e),
                        message="Knowledge Base integration will be disabled")
+
+
+def get_prompt_arn() -> Optional[str]:
+    """
+    Get prompt ARN from Parameter Store (cached for Lambda container lifetime).
+    """
+    global _cached_prompt_arn
+
+    if not USE_PROMPT_MANAGEMENT:
+        return None
+
+    if _cached_prompt_arn is not None:
+        return _cached_prompt_arn
+
+    try:
+        response = ssm.get_parameter(Name=PROMPT_PARAM_NAME)
+        _cached_prompt_arn = response['Parameter']['Value']
+        helper.log_json("INFO", "CASE_CHECK_PROMPT_ARN_LOADED",
+                       parameter_name=PROMPT_PARAM_NAME,
+                       prompt_arn=_cached_prompt_arn)
+        return _cached_prompt_arn
+    except Exception as e:
+        helper.log_json("WARNING", "CASE_CHECK_PROMPT_ARN_LOAD_FAILED",
+                       parameter_name=PROMPT_PARAM_NAME,
+                       error=str(e))
+        return None
 
 
 def get_transcript_from_s3(s3_key: str) -> str:
@@ -212,7 +245,7 @@ def get_case_check_tool():
     return {
         "toolSpec": {
             "name": "submit_case_check",
-            "description": "Submit the case check assessment results with all checks evaluated",
+            "description": "Submit the case check assessment results. Focus on providing the 'results' array with your assessment of each check, and the 'overall' summary. Metadata fields are optional and will be populated automatically.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -252,14 +285,14 @@ def get_case_check_tool():
                                     },
                                     "evidence_quote": {
                                         "type": "string",
-                                        "description": "Direct quote from transcript"
+                                        "description": "REQUIRED: Direct quote from transcript supporting your assessment. Must be actual dialogue from the call."
                                     },
                                     "comment": {
                                         "type": "string",
-                                        "description": "Assessment comment"
+                                        "description": "REQUIRED: Brief explanation of your assessment (1-2 sentences)"
                                     }
                                 },
-                                "required": ["id", "status", "confidence"]
+                                "required": ["id", "status", "confidence", "evidence_quote", "evidence_spans", "comment"]
                             }
                         },
                         "overall": {
@@ -272,8 +305,7 @@ def get_case_check_tool():
                             }
                         }
                     },
-                    "required": ["check_schema_version", "session_type", "checklist_version",
-                                 "meeting_id", "model_version", "prompt_version", "results", "overall"]
+                    "required": ["results", "overall"]
                 }
             }
         }
@@ -300,46 +332,20 @@ STARTER_SESSION_CHECKS = [
     {"id": "fees_charges_explained", "prompt": "Were fees and charges correctly explained to the client? Did the coach clearly explain the service fees (e.g., £299, salary sacrifice options)?", "required": True, "severity": "high"},
     {"id": "way_forward_agreed", "prompt": "Was a way forward agreed with the client? Did the coach and client agree on next steps and book a follow-up session?", "required": True, "severity": "medium"},
 
-    # Macro-Criteria (Coaching Quality)
-    {"id": "coach_introduction_signposting", "prompt": "Did the coach introduce themselves and Octopus Money, and signpost the structure of this call? Did the coach provide a clear introduction and outline of what the call would cover?", "required": True, "severity": "medium"},
-    {"id": "client_goals_established", "prompt": "Did the coach establish key information about the client's goals? Did the coach ask about and explore the client's financial goals?", "required": True, "severity": "high"},
-    {"id": "current_actions_established", "prompt": "Did the coach establish what the client is already doing to work towards their goals? Did the coach explore existing actions, savings, investments, or plans?", "required": True, "severity": "medium"},
-    {"id": "client_motivations_established", "prompt": "Did the coach establish client motivations for achieving their goals? Did the coach explore WHY the goals are important to the client?", "required": True, "severity": "medium"},
-    {"id": "relevant_suggestions_provided", "prompt": "Were relevant suggestions provided to the client based on the goals explored? Did the coach provide practical, relevant suggestions tailored to the client's specific goals and circumstances?", "required": True, "severity": "high"},
-    {"id": "money_calculators_introduced", "prompt": "Did the coach introduce the money calculators? Did the coach explain and introduce the money calculators that the client will use?", "required": True, "severity": "medium"},
-    {"id": "asked_client_move_forward", "prompt": "Did the coach clearly ask the client if they want to move forward with the service? Did the coach explicitly ask if the client wants to sign up and continue?", "required": True, "severity": "high"},
-    {"id": "client_questions_opportunity", "prompt": "Did the client have the opportunity to ask any questions? Did the coach provide opportunities throughout and at the end for the client to ask questions?", "required": True, "severity": "medium"}
+    # Macro-Criteria (Coaching Quality) - COMMENTED OUT to reduce token requirements
+    # These can be assessed manually. Keeping only critical compliance checks for automated checking.
+    # {"id": "coach_introduction_signposting", "prompt": "Did the coach introduce themselves and Octopus Money, and signpost the structure of this call? Did the coach provide a clear introduction and outline of what the call would cover?", "required": True, "severity": "medium"},
+    # {"id": "client_goals_established", "prompt": "Did the coach establish key information about the client's goals? Did the coach ask about and explore the client's financial goals?", "required": True, "severity": "high"},
+    # {"id": "current_actions_established", "prompt": "Did the coach establish what the client is already doing to work towards their goals? Did the coach explore existing actions, savings, investments, or plans?", "required": True, "severity": "medium"},
+    # {"id": "client_motivations_established", "prompt": "Did the coach establish client motivations for achieving their goals? Did the coach explore WHY the goals are important to the client?", "required": True, "severity": "medium"},
+    # {"id": "relevant_suggestions_provided", "prompt": "Were relevant suggestions provided to the client based on the goals explored? Did the coach provide practical, relevant suggestions tailored to the client's specific goals and circumstances?", "required": True, "severity": "high"},
+    # {"id": "money_calculators_introduced", "prompt": "Did the coach introduce the money calculators? Did the coach explain and introduce the money calculators that the client will use?", "required": True, "severity": "medium"},
+    # {"id": "asked_client_move_forward", "prompt": "Did the coach clearly ask the client if they want to move forward with the service? Did the coach explicitly ask if the client wants to sign up and continue?", "required": True, "severity": "high"},
+    # {"id": "client_questions_opportunity", "prompt": "Did the client have the opportunity to ask any questions? Did the coach provide opportunities throughout and at the end for the client to ask questions?", "required": True, "severity": "medium"}
 ]
 
 
 # JSON repair and extraction functions removed - no longer needed with structured output via Tool Use
-
-
-def _build_case_prompt(meeting_id: str, cleaned_transcript: str, checks: list, kb_examples: str = "") -> str:
-    """
-    Build case check prompt with optional KB examples
-
-    Args:
-        meeting_id: Meeting identifier
-        cleaned_transcript: The transcript to assess
-        checks: List of checks to perform
-        kb_examples: Formatted examples from Knowledge Base (optional)
-
-    Returns:
-        Complete prompt string
-    """
-    checklist_json = json.dumps(
-        {"session_type": "starter_session", "version": "1", "checks": checks},
-        ensure_ascii=False,
-    )
-    return CASE_CHECK_PROMPT_TEMPLATE.format(
-        meeting_id=meeting_id,
-        model_version=MODEL_VERSION,
-        prompt_version=PROMPT_VERSION,
-        checklist_json=checklist_json,
-        kb_examples=kb_examples,
-        cleaned_transcript=cleaned_transcript
-    )
 
 
 def _save_case_json(meeting_id: str, payload: dict, year: int = None, month: int = None) -> str:
@@ -391,7 +397,8 @@ def lambda_handler(event, context):
     full_transcript = get_transcript_from_s3(transcript_key)
 
     # Use chunking strategy for long transcripts
-    CHUNK_SIZE = 40000  # ~10000 tokens per chunk (larger = fewer API calls, faster overall)
+    # Reduced chunk size to ensure output fits within Claude 3 Sonnet's 4096 token limit
+    CHUNK_SIZE = 20000  # ~5000 tokens per chunk (smaller chunks = less detailed output = fits in 4K limit)
     CHUNK_OVERLAP = 2000  # Larger overlap for compliance safety at boundaries
 
     chunks = chunk_transcript(full_transcript, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
@@ -453,29 +460,37 @@ def lambda_handler(event, context):
                        meetingId=meeting_id,
                        chunk_length=len(chunk))
 
-        # Build prompt for this chunk (without KB examples - moved to system)
-        prompt = _build_case_prompt(meeting_id, chunk, STARTER_SESSION_CHECKS, kb_examples="")
-
-        # Call Bedrock for this chunk using Converse API with structured output
-        messages = [{"role": "user", "content": [{"text": prompt}]}]
-
         # Get tool definition for guaranteed JSON schema
         case_check_tool = get_case_check_tool()
 
-        # Build system prompt with KB examples
-        # Note: Prompt caching disabled - not available in eu-west-2 region yet
-        system_message = CASE_CHECK_SYSTEM_MESSAGE
-        if kb_examples:
-            system_message += f"\n\nREFERENCE EXAMPLES:\n{kb_examples}"
+        # Get prompt ARN
+        prompt_arn = get_prompt_arn()
 
-        resp, latency_ms = helper.bedrock_converse(
-            model_id=MODEL_ID,
-            messages=messages,
-            system=system_message,  # Pass as string (no caching)
-            max_tokens=4000,  # Reduced from 8000 to optimize speed (sufficient for 25 checks)
-            temperature=0.2,
-            tools=[case_check_tool]  # Force structured output
-        )
+        if prompt_arn:
+            # Use Prompt Management
+            checklist_json = json.dumps(
+                {"session_type": "starter_session", "version": "1", "checks": STARTER_SESSION_CHECKS},
+                ensure_ascii=False,
+            )
+
+            variables = {
+                "kb_examples": kb_examples if kb_examples else "",
+                "checklist_json": checklist_json,
+                "cleaned_transcript": chunk
+            }
+
+            resp, latency_ms = invoke_with_prompt_management(
+                prompt_arn=prompt_arn,
+                variables=variables,
+                model_id=MODEL_ID,
+                tools=[case_check_tool],
+                tool_choice={"tool": {"name": "submit_case_check"}},
+                max_tokens_override=4000
+            )
+        else:
+            # Fallback to inline prompt (should not happen with USE_PROMPT_MANAGEMENT=true)
+            helper.log_json("ERROR", "NO_PROMPT_ARN", message="Prompt Management disabled or failed")
+            raise ValueError("Prompt Management is required but prompt ARN not available")
 
         # Extract structured output from tool use
         output_message = resp.get("output", {}).get("message", {})
@@ -494,6 +509,53 @@ def lambda_handler(event, context):
         # Get validated JSON from tool input
         validated_json = tool_use_block["input"]
 
+        # Inject metadata fields that LLM shouldn't generate
+        # The LLM should only focus on the actual case check results
+        validated_json.setdefault("check_schema_version", CASE_CHECK_SCHEMA_VERSION)
+        validated_json.setdefault("session_type", "starter_session")
+        validated_json.setdefault("checklist_version", "1")
+        validated_json.setdefault("meeting_id", meeting_id)
+        validated_json.setdefault("model_version", MODEL_VERSION)
+        validated_json.setdefault("prompt_version", PROMPT_VERSION)
+
+        # Defensive parsing: Claude 3 Sonnet sometimes returns arrays as strings
+        validated_json = helper.parse_stringified_fields(
+            data=validated_json,
+            fields=["results"],
+            meeting_id=meeting_id,
+            context=f"case_check_chunk_{idx + 1}"
+        )
+
+        # Calculate evidence_spans if missing or empty
+        if "results" in validated_json and isinstance(validated_json["results"], list):
+            for result_item in validated_json["results"]:
+                if isinstance(result_item, dict):
+                    evidence_quote = result_item.get("evidence_quote", "")
+                    evidence_spans = result_item.get("evidence_spans", [])
+
+                    # If evidence_spans is empty but we have evidence_quote, calculate it
+                    if evidence_quote and not evidence_spans:
+                        # Find the quote in the chunk
+                        # Clean up the quote for matching
+                        clean_quote = evidence_quote.strip()
+                        if clean_quote:
+                            pos = chunk.find(clean_quote)
+                            if pos != -1:
+                                result_item["evidence_spans"] = [[pos, pos + len(clean_quote)]]
+                            else:
+                                # Try fuzzy match with first 50 chars
+                                short_quote = clean_quote[:50]
+                                pos = chunk.find(short_quote)
+                                if pos != -1:
+                                    result_item["evidence_spans"] = [[pos, pos + len(clean_quote)]]
+                                else:
+                                    # No match found, set empty span
+                                    result_item["evidence_spans"] = []
+                                    helper.log_json("WARNING", "EVIDENCE_QUOTE_NOT_FOUND_IN_CHUNK",
+                                                   meetingId=meeting_id,
+                                                   check_id=result_item.get("id"),
+                                                   quote_preview=clean_quote[:100])
+
         # Check if response was truncated
         stop_reason = resp.get("stopReason")
         if stop_reason == "max_tokens":
@@ -501,8 +563,9 @@ def lambda_handler(event, context):
             helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
                            meetingId=meeting_id,
                            chunk_idx=idx + 1,
-                           message="Chunk response hit max_tokens - using partial results")
-            # Continue with partial results instead of failing
+                           message="Chunk response hit max_tokens - skipping chunk to avoid partial/malformed data")
+            # Skip this truncated chunk - partial compliance data is unreliable
+            continue
 
         usage = resp.get("usage", {})
 
@@ -530,11 +593,18 @@ def lambda_handler(event, context):
         parsed = CaseCheckPayload.model_validate(validated_json)
         chunk_results.append(parsed.model_dump())
 
+    # Check if we have any successful chunks
+    if not chunk_results:
+        raise ValueError(f"No chunks processed successfully for meeting {meeting_id}. "
+                        f"Total chunks: {num_chunks}, Truncated/failed: {len(truncated_chunks)}")
+
     # Merge results from all chunks
-    if num_chunks > 1:
+    if len(chunk_results) > 1:
         helper.log_json("INFO", "MERGING_CHUNK_RESULTS",
                        meetingId=meeting_id,
-                       num_chunks=num_chunks)
+                       total_chunks=num_chunks,
+                       successful_chunks=len(chunk_results),
+                       truncated_chunks=len(truncated_chunks))
         data = merge_case_check_results(chunk_results)
     else:
         data = chunk_results[0]

@@ -26,6 +26,10 @@ Globals:
         # KNOWLEDGE_BASE_ID is read from Parameter Store at runtime
         KNOWLEDGE_BASE_PARAM_NAME: "/call-summariser/knowledge-base-id"
         USE_KNOWLEDGE_BASE: "true"
+        # Prompt Management Configuration
+        USE_PROMPT_MANAGEMENT: "true"
+        PROMPT_PARAM_NAME_SUMMARY: "/call-summariser/prompts/summary/current"
+        PROMPT_PARAM_NAME_CASE_CHECK: "/call-summariser/prompts/case-check/current"
         # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
         A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
         A2I_PORTAL_URL: ""
@@ -231,8 +235,17 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:GetPrompt
               Resource:
-                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:prompt/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
 
   ValidateRepairFunction:
     Type: AWS::Serverless::Function
@@ -251,8 +264,17 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:GetPrompt
               Resource:
-                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:prompt/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
 
   CaseCheckFunction:
     Type: AWS::Serverless::Function
@@ -271,20 +293,23 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:GetPrompt
               Resource:
-                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
-                - arn:aws:bedrock:eu-west-2::foundation-model/amazon.titan-embed-text-v2:0
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:prompt/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
             - Effect: Allow
               Action:
                 - bedrock:Retrieve
                 - bedrock:RetrieveAndGenerate
               Resource:
                 - arn:aws:bedrock:eu-west-2:*:knowledge-base/*
-            - Effect: Allow
-              Action:
-                - ssm:GetParameter
-              Resource:
-                - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/knowledge-base-id
 
   PersistSummaryFunction:
     Type: AWS::Serverless::Function
@@ -485,8 +510,17 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:GetPrompt
               Resource:
-                - arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:prompt/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
 
   # GradioDashboardFunction:
   #   Type: AWS::Serverless::Function

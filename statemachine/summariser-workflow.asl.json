@@ -268,6 +268,7 @@
         "source.$": "$.source",
         "forceReprocess.$": "$$.Execution.Input.forceReprocess",
         "validatedDataKey.$": "$.parallelResults[0].validatedDataKey",
+        "isValid.$": "$.parallelResults[0].isValid",
         "caseCheckResult": {
           "caseKey.$": "$.parallelResults[1].caseKey",
           "passRate.$": "$.parallelResults[1].passRate"
@@ -275,7 +276,32 @@
         "redactedTranscriptKey.$": "$.redactedTranscriptKey"
       },
       "ResultPath": "$",
-      "Next": "PersistSummary"
+      "Next": "CheckSummaryValid"
+    },
+    "CheckSummaryValid": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validatedDataKey",
+          "IsNull": true,
+          "Next": "HandleSummaryInvalid"
+        },
+        {
+          "Variable": "$.isValid",
+          "BooleanEquals": false,
+          "Next": "HandleSummaryInvalid"
+        }
+      ],
+      "Default": "PersistSummary"
+    },
+    "HandleSummaryInvalid": {
+      "Type": "Pass",
+      "Comment": "Summary validation failed, cannot proceed to persist",
+      "Result": {
+        "Cause": "Summary generation or validation failed"
+      },
+      "ResultPath": "$.error",
+      "Next": "HandleFailure"
     },
     "PersistSummary": {
       "Type": "Task",

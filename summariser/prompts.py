@@ -48,10 +48,12 @@ ASSESSMENT RULES:
 - Use 'Inconclusive' only if there's genuinely not enough evidence to make a judgment.
 
 EVIDENCE & COMMENTS:
-- Always provide specific evidence quotes from the transcript when available.
-- Evidence quotes should be actual dialogue excerpts, not summaries.
-- Comments should explain WHY you assigned the status and what could be improved (for CompetentWithDevelopment) or what went wrong (for Fail).
-- Set 'evidence_quote' and 'comment' to empty string ('') only if truly unavailable.
+- MANDATORY: You MUST provide BOTH evidence_quote AND evidence_spans for EVERY check.
+- evidence_quote: Exact dialogue excerpts from transcript (not summaries)
+- evidence_spans: Character positions as [[start, end]] where the quote appears in transcript
+- Comments are MANDATORY: Explain WHY you assigned the status (1-2 sentences)
+- If you cannot find evidence, set status to 'Inconclusive' with explanation in comment.
+- Empty evidence_quote or missing evidence_spans will cause validation failure.
 
 COMPLIANCE VIOLATIONS:
 - If the coach gives regulated financial advice (specific product recommendations) → 'Fail'

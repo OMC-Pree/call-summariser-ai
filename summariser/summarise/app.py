@@ -1,63 +1,100 @@
 """
 Summarise Lambda - Step Functions workflow step
-Generates AI summary using Bedrock Claude via Converse API (streaming off)
+Generates AI summary using Bedrock Claude via Converse API with Prompt Management
 """
 import json
+import os
 import boto3
+from typing import Optional
 from utils import helper
 from utils.error_handler import lambda_error_handler, ValidationError
+from utils.prompt_management import invoke_with_prompt_management
 from constants import *
-from prompts import SUMMARY_PROMPT_TEMPLATE, SUMMARY_SYSTEM_MESSAGE
 from datetime import datetime, timezone
 
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 s3 = boto3.client("s3")
+ssm = boto3.client("ssm", region_name=AWS_REGION)
+
+# Prompt Management configuration
+USE_PROMPT_MANAGEMENT = os.getenv("USE_PROMPT_MANAGEMENT", "true").lower() == "true"
+PROMPT_PARAM_NAME = os.getenv("PROMPT_PARAM_NAME_SUMMARY", "/call-summariser/prompts/summary/current")
+
+# Cache for prompt ARN (loaded once per Lambda container)
+_cached_prompt_arn = None
+
+
+def get_prompt_arn() -> Optional[str]:
+    """
+    Get prompt ARN from Parameter Store (cached for Lambda container lifetime).
+    This allows changing prompts without code deployment.
+
+    Returns:
+        Prompt ARN or None if not available
+    """
+    global _cached_prompt_arn
+
+    if not USE_PROMPT_MANAGEMENT:
+        return None
+
+    if _cached_prompt_arn is not None:
+        return _cached_prompt_arn
+
+    try:
+        response = ssm.get_parameter(Name=PROMPT_PARAM_NAME)
+        _cached_prompt_arn = response['Parameter']['Value']
+        helper.log_json("INFO", "PROMPT_ARN_LOADED",
+                       parameter_name=PROMPT_PARAM_NAME,
+                       prompt_arn=_cached_prompt_arn)
+        return _cached_prompt_arn
+    except Exception as e:
+        helper.log_json("WARNING", "PROMPT_ARN_LOAD_FAILED",
+                       parameter_name=PROMPT_PARAM_NAME,
+                       error=str(e))
+        return None
 
 
 def get_summary_tool():
     """
     Create a tool definition for structured summary output.
-    This ensures the LLM returns valid JSON matching our expected schema.
+    SIMPLIFIED: Reduced complexity to improve reliability with Claude 3 Sonnet's 4K token limit.
+    All arrays now use simple strings instead of nested objects.
     """
     return {
         "toolSpec": {
             "name": "submit_call_summary",
-            "description": "Submit the call summary with all required fields",
+            "description": "Submit the call summary with all required fields. Keep responses concise.",
             "inputSchema": {
                 "json": {
                     "type": "object",
                     "properties": {
                         "summary": {
                             "type": "string",
-                            "description": "Overall summary of the call"
+                            "description": "Overall summary of the call (2-3 paragraphs maximum)"
                         },
                         "key_points": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of key discussion points"
+                            "description": "Array of 5-7 key discussion points as separate strings (NOT formatted text, each point is one array element)"
                         },
                         "action_items": {
                             "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "description": {"type": "string"}
-                                },
-                                "required": ["description"]
-                            },
-                            "description": "Action items from the call"
+                            "items": {"type": "string"},
+                            "description": "List of action items from the call (simple strings, not objects)"
                         },
                         "sentiment_analysis": {
                             "type": "object",
                             "properties": {
                                 "label": {
                                     "type": "string",
-                                    "enum": ["Positive", "Neutral", "Negative"]
+                                    "enum": ["Positive", "Neutral", "Negative"],
+                                    "description": "Overall sentiment of the call"
                                 },
                                 "confidence": {
                                     "type": "number",
                                     "minimum": 0.0,
-                                    "maximum": 1.0
+                                    "maximum": 1.0,
+                                    "description": "Confidence in sentiment assessment"
                                 }
                             },
                             "required": ["label", "confidence"]
@@ -67,21 +104,28 @@ def get_summary_tool():
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "id": {"type": "string"},
-                                    "label": {"type": "string"},
-                                    "group": {"type": "string"},
+                                    "id": {
+                                        "type": "string",
+                                        "description": "Theme identifier (lowercase, underscored)"
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "description": "Human-readable theme name"
+                                    },
+                                    "group": {
+                                        "type": "string",
+                                        "description": "Theme category (e.g., financial_goals, risk_management, debt_management)"
+                                    },
                                     "confidence": {
                                         "type": "number",
                                         "minimum": 0.0,
-                                        "maximum": 1.0
-                                    },
-                                    "evidence_quote": {
-                                        "type": ["string", "null"]
+                                        "maximum": 1.0,
+                                        "description": "Confidence score for theme identification"
                                     }
                                 },
-                                "required": ["id", "label", "confidence"]
+                                "required": ["id", "label", "group", "confidence"]
                             },
-                            "description": "Identified themes from the call (0-7 themes)"
+                            "description": "List of 3-5 main themes with categorization and confidence (0-5 themes max)"
                         }
                     },
                     "required": ["summary", "key_points", "action_items", "sentiment_analysis", "themes"]
@@ -97,9 +141,9 @@ def get_transcript_from_s3(s3_key: str) -> str:
     return response['Body'].read().decode('utf-8')
 
 
-def build_prompt(transcript: str) -> str:
-    """Build the summary prompt from transcript"""
-    return SUMMARY_PROMPT_TEMPLATE.replace("{transcript}", transcript)
+def build_prompt_variables(transcript: str) -> dict:
+    """Build variables for prompt template"""
+    return {"transcript": transcript}
 
 
 @lambda_error_handler()
@@ -127,33 +171,51 @@ def lambda_handler(event, context):
     # Fetch transcript from S3
     transcript = get_transcript_from_s3(transcript_key)
 
-    helper.log_json("INFO", "STARTING_LLM_SUMMARY", meetingId=meeting_id, transcript_length=len(transcript))
-
-    # Build prompt
-    prompt = build_prompt(transcript)
-
-    # Call Bedrock using Converse API with structured output
-    messages = [
-        {"role": "user", "content": [{"text": prompt}]}
-    ]
+    helper.log_json("INFO", "STARTING_LLM_SUMMARY",
+                   meetingId=meeting_id,
+                   transcript_length=len(transcript),
+                   use_prompt_management=USE_PROMPT_MANAGEMENT)
 
     # Get tool definition for guaranteed JSON schema
     summary_tool = get_summary_tool()
 
-    # Build system prompt
-    # Note: Prompt caching disabled - not available in eu-west-2 region yet
-    system_message = SUMMARY_SYSTEM_MESSAGE
+    # Build prompt variables
+    variables = build_prompt_variables(transcript)
 
-    helper.log_json("INFO", "CALLING_BEDROCK", meetingId=meeting_id, prompt_length=len(prompt))
+    # Get prompt ARN (lazy-loaded, cached)
+    prompt_arn = get_prompt_arn()
 
-    resp, latency_ms = helper.bedrock_converse(
-        model_id=MODEL_ID,
-        messages=messages,
-        system=system_message,  # Pass as string (no caching)
-        max_tokens=1200,
-        temperature=0.3,
-        tools=[summary_tool]  # Force structured output
-    )
+    helper.log_json("INFO", "CALLING_BEDROCK",
+                   meetingId=meeting_id,
+                   prompt_arn=prompt_arn,
+                   use_prompt_management=USE_PROMPT_MANAGEMENT)
+
+    # Call Bedrock with Prompt Management or fallback to inline
+    if prompt_arn:
+        # Fetch prompt from Prompt Management and add tools at runtime
+        resp, latency_ms = invoke_with_prompt_management(
+            prompt_arn=prompt_arn,
+            variables=variables,
+            model_id=MODEL_ID,
+            tools=[summary_tool],
+            tool_choice={"tool": {"name": "submit_call_summary"}},
+            system_override=None  # Use system prompt from Prompt Management
+        )
+    else:
+        # Fallback to inline prompt (for backward compatibility)
+        from prompts import SUMMARY_PROMPT_TEMPLATE, SUMMARY_SYSTEM_MESSAGE
+        prompt = SUMMARY_PROMPT_TEMPLATE.format(transcript=transcript)
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+
+        resp, latency_ms = helper.bedrock_converse(
+            model_id=MODEL_ID,
+            messages=messages,
+            system=SUMMARY_SYSTEM_MESSAGE,
+            max_tokens=1200,
+            temperature=0.3,
+            tools=[summary_tool],
+            tool_choice={"tool": {"name": "submit_call_summary"}}
+        )
 
     helper.log_json("INFO", "BEDROCK_CALL_SUCCESS", meetingId=meeting_id, latency_ms=latency_ms)
 
@@ -173,6 +235,36 @@ def lambda_handler(event, context):
 
     # Get validated JSON from tool input
     validated_json = tool_use_block["input"]
+
+    # Debug logging: log the raw tool output structure
+    helper.log_json("DEBUG", "RAW_TOOL_OUTPUT",
+                   meetingId=meeting_id,
+                   has_summary="summary" in validated_json,
+                   has_key_points="key_points" in validated_json,
+                   has_sentiment_analysis="sentiment_analysis" in validated_json,
+                   key_points_type=type(validated_json.get("key_points")).__name__ if "key_points" in validated_json else "missing",
+                   key_points_value_preview=str(validated_json.get("key_points", ""))[:100])
+
+    # Defensive parsing: Claude sometimes returns JSON array fields as strings when output is large
+    # Parse any stringified array fields back to proper arrays
+    validated_json = helper.parse_stringified_fields(
+        data=validated_json,
+        fields=["key_points", "action_items", "themes"],
+        meeting_id=meeting_id,
+        context="summary"
+    )
+
+    # Transform action_items from string array to object array for backward compatibility
+    # ["Action 1", "Action 2"] -> [{"description": "Action 1"}, {"description": "Action 2"}]
+    if "action_items" in validated_json and validated_json["action_items"]:
+        if isinstance(validated_json["action_items"], list) and len(validated_json["action_items"]) > 0:
+            if isinstance(validated_json["action_items"][0], str):
+                validated_json["action_items"] = [
+                    {"description": item} for item in validated_json["action_items"]
+                ]
+
+    # Themes kept as objects with id, label, group, confidence for proper categorization
+
     raw_text = json.dumps(validated_json)
 
     # Log usage metrics from Converse API with cache information

@@ -1,6 +1,7 @@
 import json
 import random
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 from botocore.config import Config
@@ -138,6 +139,99 @@ def bedrock_converse(
             sleep_s = min(max_sleep, base * (2 ** (attempt - 1))) * (0.7 + 0.6 * random.random())
             time.sleep(sleep_s)
     raise last_err
+
+
+def parse_stringified_fields(
+    data: dict,
+    fields: list,
+    meeting_id: str,
+    context: str = ""
+) -> dict:
+    """
+    Defensive parsing for LLM tool outputs that may stringify array/object fields.
+
+    Claude's Converse API with Tool Use sometimes returns array fields as JSON strings
+    instead of parsed arrays when output is large or complex. This function detects
+    and parses those stringified fields back to their proper types.
+
+    Args:
+        data: The validated_json from tool use (typically tool_use_block["input"])
+        fields: List of field names that should be arrays/objects but might be strings
+        meeting_id: Meeting ID for logging context
+        context: Additional context for logging (e.g., "chunk_1", "summary")
+
+    Returns:
+        Modified data dict with parsed fields
+
+    Raises:
+        ValueError: If a field is a string but cannot be parsed as valid JSON
+
+    Example:
+        >>> tool_output = tool_use_block["input"]
+        >>> tool_output = parse_stringified_fields(
+        ...     tool_output,
+        ...     ["results", "key_points"],
+        ...     meeting_id="123",
+        ...     context="chunk_1"
+        ... )
+    """
+    for field in fields:
+        if field not in data:
+            continue
+
+        if isinstance(data[field], str):
+            # Skip empty strings - treat as empty array/object
+            stripped = data[field].strip()
+            if not stripped:
+                log_json("WARNING", "FIELD_WAS_EMPTY_STRING",
+                        meetingId=meeting_id,
+                        field=field,
+                        context=context or "unknown",
+                        message=f"{field} field was empty string, setting to empty array")
+                data[field] = []
+                continue
+
+            # Check if it's a bullet-point formatted string (LLM sometimes does this)
+            # If it starts with "- " or "• ", it's likely a formatted list, not JSON
+            if stripped.startswith(("- ", "• ", "* ")):
+                # Split by newlines and extract bullet points
+                lines = [line.strip() for line in stripped.split('\n') if line.strip()]
+                # Remove bullet markers and convert to array
+                parsed_array = []
+                for line in lines:
+                    # Remove common bullet markers
+                    cleaned = line.lstrip('•*-— ').strip()
+                    if cleaned:
+                        parsed_array.append(cleaned)
+
+                data[field] = parsed_array
+                log_json("WARNING", "FIELD_WAS_FORMATTED_STRING",
+                        meetingId=meeting_id,
+                        field=field,
+                        context=context or "unknown",
+                        items_parsed=len(parsed_array),
+                        message=f"{field} was bullet-formatted string, converted to array")
+                continue
+
+            # Try to parse as JSON
+            try:
+                data[field] = json.loads(stripped)
+                log_json("WARNING", "FIELD_WAS_STRING",
+                        meetingId=meeting_id,
+                        field=field,
+                        context=context or "unknown",
+                        message=f"{field} field was returned as string, successfully parsed")
+            except json.JSONDecodeError as e:
+                log_json("ERROR", "FIELD_PARSE_FAILED",
+                        meetingId=meeting_id,
+                        field=field,
+                        context=context or "unknown",
+                        error=str(e),
+                        raw_value_preview=str(data[field])[:500])
+                context_msg = f" in {context}" if context else ""
+                raise ValueError(f"Failed to parse stringified {field} field{context_msg}: {str(e)}")
+
+    return data
 
 
 

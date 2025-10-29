@@ -1,0 +1,26 @@
+{
+  "name": "call-summariser-summary-v2",
+  "description": "Financial coaching call summary generation prompt - v2.0 (tool-agnostic)",
+  "modelId": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "inferenceConfiguration": {
+    "temperature": 0.3,
+    "maxTokens": 1200,
+    "topP": 1.0
+  },
+  "systemPrompt": [
+    {
+      "text": "You are a financial assistant that summarizes coaching calls."
+    }
+  ],
+  "userPrompt": [
+    {
+      "text": "Analyze this customer coaching call transcript and provide a comprehensive summary.\n\nYour summary should include:\n- An overall summary of the call\n- Key discussion points\n- Action items that need to be followed up\n- Sentiment analysis of the conversation\n- Financial themes discussed (such as: Budgeting, ISA, Mortgage, Pension, Protection, Debt, Savings, Investments, Tax Planning, Estate Planning, Insurance, Retirement)\n\nGuidelines:\n- Use British English and GBP for currency\n- Only identify themes that are clearly supported by the conversation\n- Provide specific evidence quotes from the transcript where relevant\n- Be objective and factual\n\nTranscript:\n{{transcript}}"
+    }
+  ],
+  "variables": [
+    {
+      "name": "transcript",
+      "description": "The call transcript to summarize"
+    }
+  ]
+}
