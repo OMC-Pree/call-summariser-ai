@@ -1,14 +1,16 @@
 # summariser/prompts.py
 """
-Centralized prompt templates for the Call Summarizer application.
-These prompts are used for LLM interactions across the application.
+DEPRECATED: Prompt templates - Use Bedrock Prompt Management instead
+
+This file is maintained only for backward compatibility when USE_PROMPT_MANAGEMENT=false.
+New deployments should use AWS Bedrock Prompt Management for easier prompt iteration.
+
+See: setup/prompt_management/ for the new approach.
 """
 
 # Prompt Version Constants
 SUMMARY_PROMPT_VERSION = "2025-09-25-a"
 CASE_CHECK_PROMPT_VERSION = "2025-09-25-a"
-CASE_CHECK_SCHEMA_VERSION = "1.1"
-JSON_REPAIR_PROMPT_VERSION = "2025-09-25-a"
 
 # Summary Generation Prompt
 SUMMARY_PROMPT_TEMPLATE = """You are a financial assistant summarizing a customer coaching call.
@@ -75,16 +77,7 @@ CHECKLIST:
 CLEANED_TRANSCRIPT:
 {cleaned_transcript}"""
 
-# JSON Repair Prompt Template
-JSON_REPAIR_PROMPT_TEMPLATE = """The following is intended to be a JSON object matching the case check schema, but it may be malformed or truncated. Return ONLY a single, valid JSON object that starts with '{{' and ends with '}}'. Do not include any preface, code fences, or comments.
-
------ BEGIN -----
-{bad_json}
------ END -----"""
-
 # System Messages
 SUMMARY_SYSTEM_MESSAGE = "You are a financial assistant that summarizes coaching calls. Always use the provided tool to structure your response."
 
 CASE_CHECK_SYSTEM_MESSAGE = "You are a compliance auditor. Always use the provided tool to structure your assessment results."
-
-JSON_REPAIR_SYSTEM_MESSAGE = "You are a strict JSON fixer. Output ONLY valid JSON. No extra text."

@@ -1,47 +1,77 @@
 """
-Bedrock Prompt Management integration helper
+AWS Bedrock Prompt Management integration
 
-This module provides utilities for working with prompts stored in AWS Bedrock Prompt Management.
-It fetches prompt text and combines it with tools at runtime for flexible structured output.
-
-ARCHITECTURE:
-- Prompts stored in Prompt Management (easy to change via AWS Console)
-- Tool definitions in Lambda code (co-located with Pydantic models)
-- At runtime: fetch prompt + add tools + call Converse API
+Utilities for fetching prompts from Bedrock Prompt Management and invoking them with tools.
+Architecture: Prompts in PM, tool definitions in code, combined at runtime.
 """
 
-import os
-import boto3
+import time
 from typing import Dict, Any, Optional, List, Tuple
 from utils import helper
+from utils.aws_clients import AWSClients
 
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-2")
-bedrock_runtime = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-bedrock_agent = boto3.client("bedrock-agent", region_name=AWS_REGION)
+bedrock_runtime = AWSClients.bedrock_runtime()
+bedrock_agent = None
+
+
+def _get_bedrock_agent():
+    """Get Bedrock Agent client (lazily initialized)"""
+    global bedrock_agent
+    if bedrock_agent is None:
+        import boto3
+        from constants import AWS_REGION
+        bedrock_agent = boto3.client("bedrock-agent", region_name=AWS_REGION)
+    return bedrock_agent
+
+
+def get_prompt_arn_from_parameter_store(
+    param_name: str,
+    cache_dict: Dict[str, Optional[str]],
+    use_prompt_management: bool = True
+) -> Optional[str]:
+    """
+    Get prompt ARN from Parameter Store with Lambda container caching.
+
+    Args:
+        param_name: SSM parameter name
+        cache_dict: Cache dictionary (module-level)
+        use_prompt_management: Whether prompt management is enabled
+
+    Returns:
+        Prompt ARN or None
+    """
+    cache_key = "arn"
+
+    if not use_prompt_management:
+        return None
+
+    if cache_key in cache_dict and cache_dict[cache_key] is not None:
+        return cache_dict[cache_key]
+
+    try:
+        ssm = AWSClients.ssm()
+        response = ssm.get_parameter(Name=param_name)
+        cache_dict[cache_key] = response['Parameter']['Value']
+        helper.log_json("INFO", "PROMPT_ARN_LOADED",
+                       parameter_name=param_name,
+                       prompt_arn=cache_dict[cache_key])
+        return cache_dict[cache_key]
+    except Exception as e:
+        helper.log_json("WARNING", "PROMPT_ARN_LOAD_FAILED",
+                       parameter_name=param_name,
+                       error=str(e))
+        return None
 
 
 def _parse_prompt_arn(prompt_arn: str) -> Tuple[str, Optional[str]]:
-    """
-    Parse prompt ARN to extract prompt ID and version.
-
-    Args:
-        prompt_arn: ARN like arn:aws:bedrock:region:account:prompt/prompt-id:version
-                    or arn:aws:bedrock:region:account:prompt/prompt-id (no version)
-
-    Returns:
-        tuple: (prompt_id, version or None)
-    """
-    # Extract the last segment after the final slash
+    """Parse prompt ARN to extract ID and version."""
     last_segment = prompt_arn.split("/")[-1]
 
-    # Check if version exists (last segment contains a colon)
     if ":" in last_segment:
-        # Split on colon to separate ID and version
         parts = last_segment.split(":")
         prompt_id = parts[0]
         version = parts[1]
     else:
-        # No version, the entire last segment is the prompt ID
         prompt_id = last_segment
         version = None
 
@@ -50,45 +80,30 @@ def _parse_prompt_arn(prompt_arn: str) -> Tuple[str, Optional[str]]:
 
 def get_prompt_text(prompt_arn: str) -> Tuple[str, str, Dict[str, Any]]:
     """
-    Fetch prompt text and configuration from Prompt Management.
+    Fetch prompt text and inference config from Prompt Management.
 
-    Args:
-        prompt_arn: ARN of the prompt (including version) e.g. arn:aws:bedrock:...:prompt/ID:VERSION
-
-    Returns:
-        tuple: (system_prompt, user_prompt_template, inference_config)
-
-    Example:
-        system, user_template, config = get_prompt_text(prompt_arn)
-        user_prompt = user_template.replace("{{transcript}}", transcript_text)
+    Returns: (system_prompt, user_template, inference_config)
     """
-    # Extract prompt ID and version from ARN
     prompt_id, version = _parse_prompt_arn(prompt_arn)
 
-    # Get prompt details
     try:
+        agent = _get_bedrock_agent()
         if version:
-            response = bedrock_agent.get_prompt(
+            response = agent.get_prompt(
                 promptIdentifier=prompt_id,
                 promptVersion=version
             )
         else:
-            response = bedrock_agent.get_prompt(promptIdentifier=prompt_id)
+            response = agent.get_prompt(promptIdentifier=prompt_id)
 
-        # Extract the variant (we use 'default' variant)
         if not response.get('variants'):
             raise ValueError(f"No variants found for prompt {prompt_id} (version: {version})")
 
         variant = response['variants'][0]
-
-        # Get system prompt (placeholder for now)
         system_prompt = ""
-
-        # Get user prompt template
         template_config = variant.get('templateConfiguration', {}).get('text', {})
         user_prompt_template = template_config.get('text', '')
 
-        # Get inference configuration
         inference_config = {}
         if 'inferenceConfiguration' in variant:
             inf_conf = variant['inferenceConfiguration'].get('text', {})
@@ -122,46 +137,17 @@ def invoke_with_prompt_management(
     max_tokens_override: Optional[int] = None
 ) -> Tuple[Dict[str, Any], int]:
     """
-    Fetch prompt from Prompt Management and invoke with tools.
+    Fetch prompt from Prompt Management and invoke Converse API with tools.
 
-    This is the recommended approach: prompts in PM, tools in code.
-
-    Args:
-        prompt_arn: ARN of the prompt from Prompt Management
-        variables: Variables to substitute in prompt template
-        model_id: Model ID to use (e.g. "anthropic.claude-3-5-sonnet-20241022-v2:0")
-        tools: Tool definitions for structured output
-        tool_choice: Optional tool choice configuration
-        system_override: Optional system prompt override
-        max_tokens_override: Optional override for max_tokens (overrides prompt's inference config)
-
-    Returns:
-        tuple: (response dict, latency_ms)
-
-    Example:
-        response, latency = invoke_with_prompt_management(
-            prompt_arn="arn:aws:bedrock:eu-west-2:123:prompt/ABC:1",
-            variables={"transcript": transcript_text},
-            model_id=MODEL_ID,
-            tools=[get_summary_tool()],
-            tool_choice={"tool": {"name": "submit_call_summary"}}
-        )
+    Returns: (response, latency_ms)
     """
-    import time
-
-    # Fetch prompt text from Prompt Management
     system_pm, user_template_pm, inference_config = get_prompt_text(prompt_arn)
 
-    # Substitute variables in template
-    # Replace {{variable_name}} with actual values
     user_prompt = user_template_pm
     for key, value in variables.items():
         user_prompt = user_prompt.replace(f"{{{{{key}}}}}", value)
 
-    # Build Converse API request
-    messages = [
-        {"role": "user", "content": [{"text": user_prompt}]}
-    ]
+    messages = [{"role": "user", "content": [{"text": user_prompt}]}]
 
     request_params = {
         "modelId": model_id,
@@ -173,29 +159,22 @@ def invoke_with_prompt_management(
         }
     }
 
-    # Add system prompt
     system_text = system_override or system_pm
     if system_text:
         request_params["system"] = [{"text": system_text}]
 
-    # Add tools
     request_params["toolConfig"] = {"tools": tools}
     if tool_choice:
         request_params["toolConfig"]["toolChoice"] = tool_choice
     elif len(tools) == 1:
-        # Auto-force single tool use
         tool_name = tools[0].get("toolSpec", {}).get("name")
         if tool_name:
-            request_params["toolConfig"]["toolChoice"] = {
-                "tool": {"name": tool_name}
-            }
+            request_params["toolConfig"]["toolChoice"] = {"tool": {"name": tool_name}}
         else:
-            helper.log_json("WARNING", "MISSING_TOOL_NAME",
-                          tool_structure=str(tools[0]))
+            helper.log_json("WARNING", "MISSING_TOOL_NAME", tool_structure=str(tools[0]))
 
     start_time = time.time()
 
-    # Call Converse API
     try:
         response = bedrock_runtime.converse(**request_params)
         latency_ms = int((time.time() - start_time) * 1000)
@@ -210,19 +189,17 @@ def invoke_with_prompt_management(
 
 
 def get_prompt_info(prompt_arn: str) -> Dict[str, Any]:
-    """
-    Get information about a prompt from Prompt Management.
-
-    Args:
-        prompt_arn: ARN of the prompt
-
-    Returns:
-        Dict with prompt metadata
-    """
-    # Extract prompt ID and version from ARN using helper
+    """Get prompt metadata from Prompt Management."""
     prompt_id, version = _parse_prompt_arn(prompt_arn)
 
-    response = bedrock_agent.get_prompt(promptIdentifier=prompt_id)
+    agent = _get_bedrock_agent()
+    if version:
+        response = agent.get_prompt(
+            promptIdentifier=prompt_id,
+            promptVersion=version
+        )
+    else:
+        response = agent.get_prompt(promptIdentifier=prompt_id)
 
     return {
         "id": response["id"],

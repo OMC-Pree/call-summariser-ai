@@ -4,54 +4,34 @@ Generates AI summary using Bedrock Claude via Converse API with Prompt Managemen
 """
 import json
 import os
-import boto3
 from typing import Optional
-from utils import helper
-from utils.error_handler import lambda_error_handler, ValidationError
-from utils.prompt_management import invoke_with_prompt_management
-from constants import *
 from datetime import datetime, timezone
 
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-s3 = boto3.client("s3")
-ssm = boto3.client("ssm", region_name=AWS_REGION)
+from utils import helper
+from utils.error_handler import lambda_error_handler, ValidationError
+from utils.prompt_management import invoke_with_prompt_management, get_prompt_arn_from_parameter_store
+from utils.aws_clients import AWSClients
+from constants import *
+
+# Use centralized AWS clients
+bedrock = AWSClients.bedrock_runtime()
+s3 = AWSClients.s3()
 
 # Prompt Management configuration
 USE_PROMPT_MANAGEMENT = os.getenv("USE_PROMPT_MANAGEMENT", "true").lower() == "true"
 PROMPT_PARAM_NAME = os.getenv("PROMPT_PARAM_NAME_SUMMARY", "/call-summariser/prompts/summary/current")
 
 # Cache for prompt ARN (loaded once per Lambda container)
-_cached_prompt_arn = None
+_prompt_arn_cache = {}
 
 
 def get_prompt_arn() -> Optional[str]:
-    """
-    Get prompt ARN from Parameter Store (cached for Lambda container lifetime).
-    This allows changing prompts without code deployment.
-
-    Returns:
-        Prompt ARN or None if not available
-    """
-    global _cached_prompt_arn
-
-    if not USE_PROMPT_MANAGEMENT:
-        return None
-
-    if _cached_prompt_arn is not None:
-        return _cached_prompt_arn
-
-    try:
-        response = ssm.get_parameter(Name=PROMPT_PARAM_NAME)
-        _cached_prompt_arn = response['Parameter']['Value']
-        helper.log_json("INFO", "PROMPT_ARN_LOADED",
-                       parameter_name=PROMPT_PARAM_NAME,
-                       prompt_arn=_cached_prompt_arn)
-        return _cached_prompt_arn
-    except Exception as e:
-        helper.log_json("WARNING", "PROMPT_ARN_LOAD_FAILED",
-                       parameter_name=PROMPT_PARAM_NAME,
-                       error=str(e))
-        return None
+    """Get prompt ARN from Parameter Store (cached for Lambda container lifetime)"""
+    return get_prompt_arn_from_parameter_store(
+        param_name=PROMPT_PARAM_NAME,
+        cache_dict=_prompt_arn_cache,
+        use_prompt_management=USE_PROMPT_MANAGEMENT
+    )
 
 
 def get_summary_tool():
@@ -263,27 +243,33 @@ def lambda_handler(event, context):
                     {"description": item} for item in validated_json["action_items"]
                 ]
 
-    # Themes kept as objects with id, label, group, confidence for proper categorization
+    # Serialize for S3 storage
+    raw_text = json.dumps(validated_json, ensure_ascii=False, indent=2)
 
-    raw_text = json.dumps(validated_json)
-
-    # Log usage metrics from Converse API with cache information
+    # Calculate cost and log usage metrics
     usage = resp.get("usage", {})
+    cost_breakdown = helper.calculate_bedrock_cost(usage, model_id="claude-3-7-sonnet")
+
     log_data = {
         "meetingId": meeting_id,
+        "operation": "summary",
         "latency_ms": latency_ms,
         "input_tokens": usage.get("inputTokens", 0),
         "output_tokens": usage.get("outputTokens", 0),
         "total_tokens": usage.get("totalTokens", 0),
         "output_chars": len(raw_text),
+        "cost_usd": cost_breakdown["total_cost"],
+        "input_cost_usd": cost_breakdown["input_cost"],
+        "output_cost_usd": cost_breakdown["output_cost"]
     }
 
     # Add cache metrics if available
     if "cacheReadInputTokens" in usage:
         log_data["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
         log_data["cache_creation_tokens"] = usage.get("cacheCreationInputTokens", 0)
-        cache_savings = usage.get("cacheReadInputTokens", 0) * 0.9
-        log_data["estimated_cache_savings_tokens"] = int(cache_savings)
+        log_data["cache_read_cost_usd"] = cost_breakdown["cache_read_cost"]
+        log_data["cache_write_cost_usd"] = cost_breakdown["cache_write_cost"]
+        log_data["cache_savings_usd"] = cost_breakdown["cache_savings"]
 
     helper.log_json("INFO", "LLM_SUMMARY_OK", **log_data)
 

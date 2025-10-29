@@ -3,14 +3,15 @@ Case Check Lambda - Step Functions workflow step
 Performs compliance case checking using Bedrock Claude
 """
 import json
-import boto3
 import os
 from typing import List, Optional, Tuple, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
+
 from utils import helper
 from utils.error_handler import lambda_error_handler
-from utils.prompt_management import invoke_with_prompt_management
+from utils.prompt_management import invoke_with_prompt_management, get_prompt_arn_from_parameter_store
+from utils.aws_clients import AWSClients
 from constants import *
 
 # Import KB retrieval module
@@ -21,16 +22,17 @@ except ImportError:
     KB_ENABLED = False
     helper.log_json("WARNING", "KB_MODULE_NOT_FOUND", message="Running without Knowledge Base integration")
 
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-s3 = boto3.client("s3")
-ssm = boto3.client("ssm", region_name=AWS_REGION)
+# Use centralized AWS clients
+bedrock = AWSClients.bedrock_runtime()
+s3 = AWSClients.s3()
+ssm = AWSClients.ssm()
 
 # Prompt Management configuration
 USE_PROMPT_MANAGEMENT = os.environ.get("USE_PROMPT_MANAGEMENT", "true").lower() == "true"
 PROMPT_PARAM_NAME = os.environ.get("PROMPT_PARAM_NAME_CASE_CHECK", "/call-summariser/prompts/case-check/current")
 
 # Cache for prompt ARN (loaded once per Lambda container)
-_cached_prompt_arn = None
+_prompt_arn_cache = {}
 
 # Get KB configuration from environment
 USE_KB = os.environ.get("USE_KNOWLEDGE_BASE", "true").lower() == "true"
@@ -51,164 +53,18 @@ if USE_KB:
 
 
 def get_prompt_arn() -> Optional[str]:
-    """
-    Get prompt ARN from Parameter Store (cached for Lambda container lifetime).
-    """
-    global _cached_prompt_arn
-
-    if not USE_PROMPT_MANAGEMENT:
-        return None
-
-    if _cached_prompt_arn is not None:
-        return _cached_prompt_arn
-
-    try:
-        response = ssm.get_parameter(Name=PROMPT_PARAM_NAME)
-        _cached_prompt_arn = response['Parameter']['Value']
-        helper.log_json("INFO", "CASE_CHECK_PROMPT_ARN_LOADED",
-                       parameter_name=PROMPT_PARAM_NAME,
-                       prompt_arn=_cached_prompt_arn)
-        return _cached_prompt_arn
-    except Exception as e:
-        helper.log_json("WARNING", "CASE_CHECK_PROMPT_ARN_LOAD_FAILED",
-                       parameter_name=PROMPT_PARAM_NAME,
-                       error=str(e))
-        return None
+    """Get prompt ARN from Parameter Store (cached for Lambda container lifetime)"""
+    return get_prompt_arn_from_parameter_store(
+        param_name=PROMPT_PARAM_NAME,
+        cache_dict=_prompt_arn_cache,
+        use_prompt_management=USE_PROMPT_MANAGEMENT
+    )
 
 
 def get_transcript_from_s3(s3_key: str) -> str:
     """Fetch transcript from S3"""
     response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=s3_key)
     return response['Body'].read().decode('utf-8')
-
-
-def chunk_transcript(transcript: str, chunk_size: int = 20000, overlap: int = 2000) -> List[str]:
-    """
-    Split transcript into overlapping chunks to ensure no compliance items are missed.
-    Uses sentence boundaries to avoid splitting mid-statement.
-
-    Args:
-        transcript: Full transcript text
-        chunk_size: Target size of each chunk in characters (~5000 tokens)
-        overlap: Minimum number of characters to overlap between chunks
-
-    Returns:
-        List of transcript chunks
-    """
-    if len(transcript) <= chunk_size:
-        return [transcript]
-
-    import re
-    chunks = []
-    start = 0
-
-    while start < len(transcript):
-        end = min(start + chunk_size, len(transcript))
-
-        # If not at the end, try to break at a sentence boundary
-        if end < len(transcript):
-            # Look for sentence endings within the last 500 chars of the chunk
-            search_start = max(end - 500, start)
-            remaining = transcript[search_start:end + 500]
-
-            # Find the last sentence ending (.!?) followed by whitespace or newline
-            sentence_endings = list(re.finditer(r'[.!?]\s+', remaining))
-            if sentence_endings:
-                # Use the last sentence ending found
-                last_ending = sentence_endings[-1]
-                end = search_start + last_ending.end()
-
-        chunk = transcript[start:end]
-        chunks.append(chunk)
-
-        # Move start forward, accounting for overlap
-        start = end - overlap
-
-        # Break if we've covered the whole transcript
-        if end >= len(transcript):
-            break
-
-    return chunks
-
-
-def merge_case_check_results(chunk_results: List[dict]) -> dict:
-    """
-    Merge case check results from multiple chunks using conservative compliance strategy.
-
-    Strategy (prioritizes compliance safety):
-    - Fail > Pass > Inconclusive > NotApplicable
-    - If ANY chunk shows Fail, the merged result is Fail (catches compliance issues)
-    - If any chunk shows Pass (and no Fails), use Pass (evidence found)
-    - Within same status, use highest confidence score
-    - Combine evidence quotes from all relevant chunks
-
-    This ensures we don't miss compliance violations even if they only appear in one chunk.
-    """
-    if not chunk_results:
-        raise ValueError("No chunk results to merge")
-
-    if len(chunk_results) == 1:
-        return chunk_results[0]
-
-    # Initialize with first result
-    merged = {"results": []}
-
-    # Get all check IDs from first result
-    check_ids = [r["id"] for r in chunk_results[0]["results"]]
-
-    # Merge each check across all chunks
-    for check_id in check_ids:
-        # Collect this check from all chunks
-        check_across_chunks = []
-        for chunk_result in chunk_results:
-            for check in chunk_result["results"]:
-                if check["id"] == check_id:
-                    check_across_chunks.append(check)
-                    break
-
-        # Merge strategy for compliance safety:
-        # - Fail takes priority (conservative approach - if ANY chunk shows failure, flag it)
-        # - Then Competent (fully compliant)
-        # - Then CompetentWithDevelopment (compliant but could improve)
-        # - Then Inconclusive
-        # - Finally NotApplicable
-        # Within same status, use highest confidence
-        priority = {"Fail": 5, "Competent": 4, "CompetentWithDevelopment": 3, "Inconclusive": 2, "NotApplicable": 1}
-        best_check = max(check_across_chunks, key=lambda c: (priority.get(c["status"], 0), c.get("confidence", 0)))
-
-        # Combine evidence quotes from all chunks that found evidence
-        all_quotes = [c.get("evidence_quote", "") for c in check_across_chunks
-                     if c.get("evidence_quote") and c["status"] in ["Competent", "CompetentWithDevelopment", "Fail"]]
-        if all_quotes:
-            best_check["evidence_quote"] = " | ".join(filter(None, all_quotes))[:500]  # Limit length
-
-        merged["results"].append(best_check)
-
-    # Copy metadata from first chunk
-    merged["check_schema_version"] = chunk_results[0]["check_schema_version"]
-    merged["session_type"] = chunk_results[0]["session_type"]
-    merged["checklist_version"] = chunk_results[0]["checklist_version"]
-    merged["meeting_id"] = chunk_results[0]["meeting_id"]
-    merged["model_version"] = chunk_results[0]["model_version"]
-    merged["prompt_version"] = chunk_results[0]["prompt_version"]
-
-    # Recalculate overall statistics
-    total_checks = len(merged["results"])
-    competent_checks = sum(1 for r in merged["results"] if r["status"] in ["Competent", "CompetentWithDevelopment"])
-    pass_rate = competent_checks / total_checks if total_checks > 0 else 0
-
-    failed_ids = [r["id"] for r in merged["results"] if r["status"] == "Fail"]
-    high_severity_flags = [r["id"] for r in merged["results"]
-                          if r["status"] == "Fail" and r.get("severity") == "high"]
-
-    merged["overall"] = {
-        "pass_rate": pass_rate,
-        "failed_ids": failed_ids,
-        "high_severity_flags": high_severity_flags,
-        "has_high_severity_failures": len(high_severity_flags) > 0
-    }
-
-    return merged
 
 
 # ---------- Case check models ----------
@@ -396,26 +252,15 @@ def lambda_handler(event, context):
     # Fetch transcript from S3
     full_transcript = get_transcript_from_s3(transcript_key)
 
-    # Use chunking strategy for long transcripts
-    # Reduced chunk size to ensure output fits within Claude 3 Sonnet's 4096 token limit
-    CHUNK_SIZE = 20000  # ~5000 tokens per chunk (smaller chunks = less detailed output = fits in 4K limit)
-    CHUNK_OVERLAP = 2000  # Larger overlap for compliance safety at boundaries
+    # Claude 3.7 Sonnet context window: 200K tokens (sufficient for max 1.5h calls)
+    # Max call: 1.5h ≈ 90K chars ≈ 22.5K tokens input + 5K output = 27.5K total (13% of context)
+    # No chunking needed - process entire transcript in one API call for better context
+    helper.log_json("INFO", "CASE_CHECK_START",
+                   meetingId=meeting_id,
+                   transcript_length=len(full_transcript),
+                   transcript_tokens_approx=len(full_transcript) // 4)
 
-    chunks = chunk_transcript(full_transcript, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
-    num_chunks = len(chunks)
-
-    if num_chunks > 1:
-        helper.log_json("INFO", "USING_CHUNKED_CASE_CHECK",
-                       meetingId=meeting_id,
-                       transcript_length=len(full_transcript),
-                       num_chunks=num_chunks,
-                       chunk_size=CHUNK_SIZE)
-    else:
-        helper.log_json("INFO", "CASE_CHECK_START",
-                       meetingId=meeting_id,
-                       transcript_length=len(full_transcript))
-
-    # Retrieve KB examples once (reuse across all chunks)
+    # Retrieve KB examples for compliance checks
     kb_examples = ""
     if USE_KB and KB_ENABLED and KB_ID:
         try:
@@ -423,7 +268,6 @@ def lambda_handler(event, context):
             kb_start_time = time.time()
             helper.log_json("INFO", "KB_RETRIEVAL_START", meetingId=meeting_id, kb_id=KB_ID)
 
-            # Get check IDs and descriptions
             check_ids = [c["id"] for c in STARTER_SESSION_CHECKS]
             check_descriptions = {c["id"]: c["prompt"] for c in STARTER_SESSION_CHECKS}
 
@@ -452,176 +296,129 @@ def lambda_handler(event, context):
                        kb_enabled=KB_ENABLED,
                        has_kb_id=bool(KB_ID))
 
-    # Process each chunk
-    chunk_results = []
-    truncated_chunks = []
-    for idx, chunk in enumerate(chunks):
-        helper.log_json("INFO", f"PROCESSING_CHUNK_{idx + 1}_OF_{num_chunks}",
-                       meetingId=meeting_id,
-                       chunk_length=len(chunk))
+    # Process full transcript in single API call
+    case_check_tool = get_case_check_tool()
+    prompt_arn = get_prompt_arn()
 
-        # Get tool definition for guaranteed JSON schema
-        case_check_tool = get_case_check_tool()
-
-        # Get prompt ARN
-        prompt_arn = get_prompt_arn()
-
-        if prompt_arn:
-            # Use Prompt Management
-            checklist_json = json.dumps(
-                {"session_type": "starter_session", "version": "1", "checks": STARTER_SESSION_CHECKS},
-                ensure_ascii=False,
-            )
-
-            variables = {
-                "kb_examples": kb_examples if kb_examples else "",
-                "checklist_json": checklist_json,
-                "cleaned_transcript": chunk
-            }
-
-            resp, latency_ms = invoke_with_prompt_management(
-                prompt_arn=prompt_arn,
-                variables=variables,
-                model_id=MODEL_ID,
-                tools=[case_check_tool],
-                tool_choice={"tool": {"name": "submit_case_check"}},
-                max_tokens_override=4000
-            )
-        else:
-            # Fallback to inline prompt (should not happen with USE_PROMPT_MANAGEMENT=true)
-            helper.log_json("ERROR", "NO_PROMPT_ARN", message="Prompt Management disabled or failed")
-            raise ValueError("Prompt Management is required but prompt ARN not available")
-
-        # Extract structured output from tool use
-        output_message = resp.get("output", {}).get("message", {})
-        content_blocks = output_message.get("content", [])
-
-        # Find the tool use block
-        tool_use_block = None
-        for block in content_blocks:
-            if "toolUse" in block:
-                tool_use_block = block["toolUse"]
-                break
-
-        if not tool_use_block:
-            raise ValueError(f"No tool use block found in response for chunk {idx + 1}")
-
-        # Check if response was truncated BEFORE parsing
-        # If truncated, the JSON will be malformed and parsing will fail
-        stop_reason = resp.get("stopReason", "")
-        if stop_reason == "max_tokens":
-            truncated_chunks.append(idx + 1)
-            helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
-                           meetingId=meeting_id,
-                           chunk_idx=idx + 1,
-                           message="Chunk response hit max_tokens - skipping chunk to avoid partial/malformed data")
-            # Skip this truncated chunk - partial compliance data is unreliable
-            continue
-
-        # Get validated JSON from tool input (only if not truncated)
-        validated_json = tool_use_block["input"]
-
-        # Inject metadata fields that LLM shouldn't generate
-        validated_json.setdefault("check_schema_version", CASE_CHECK_SCHEMA_VERSION)
-        validated_json.setdefault("session_type", "starter_session")
-        validated_json.setdefault("checklist_version", "1")
-        validated_json.setdefault("meeting_id", meeting_id)
-        validated_json.setdefault("model_version", MODEL_VERSION)
-        validated_json.setdefault("prompt_version", PROMPT_VERSION)
-
-        # Defensive parsing: Claude 3 Sonnet sometimes returns arrays as strings
-        validated_json = helper.parse_stringified_fields(
-            data=validated_json,
-            fields=["results"],
-            meeting_id=meeting_id,
-            context=f"case_check_chunk_{idx + 1}"
+    if prompt_arn:
+        checklist_json = json.dumps(
+            {"session_type": "starter_session", "version": "1", "checks": STARTER_SESSION_CHECKS},
+            ensure_ascii=False,
         )
 
-        # Calculate evidence_spans if missing or empty
-        if "results" in validated_json and isinstance(validated_json["results"], list):
-            for result_item in validated_json["results"]:
-                if isinstance(result_item, dict):
-                    evidence_quote = result_item.get("evidence_quote", "")
-                    evidence_spans = result_item.get("evidence_spans", [])
+        variables = {
+            "kb_examples": kb_examples if kb_examples else "",
+            "checklist_json": checklist_json,
+            "cleaned_transcript": full_transcript
+        }
 
-                    # If evidence_spans is empty but we have evidence_quote, calculate it
-                    if evidence_quote and not evidence_spans:
-                        clean_quote = evidence_quote.strip()
-                        if clean_quote:
-                            pos = chunk.find(clean_quote)
+        resp, latency_ms = invoke_with_prompt_management(
+            prompt_arn=prompt_arn,
+            variables=variables,
+            model_id=MODEL_ID,
+            tools=[case_check_tool],
+            tool_choice={"tool": {"name": "submit_case_check"}},
+            max_tokens_override=8000
+        )
+    else:
+        helper.log_json("ERROR", "NO_PROMPT_ARN", message="Prompt Management disabled or failed")
+        raise ValueError("Prompt Management is required but prompt ARN not available")
+
+    # Extract structured output from tool use
+    output_message = resp.get("output", {}).get("message", {})
+    content_blocks = output_message.get("content", [])
+
+    tool_use_block = None
+    for block in content_blocks:
+        if "toolUse" in block:
+            tool_use_block = block["toolUse"]
+            break
+
+    if not tool_use_block:
+        raise ValueError("No tool use block found in response")
+
+    stop_reason = resp.get("stopReason", "")
+    if stop_reason == "max_tokens":
+        helper.log_json("ERROR", "CASE_CHECK_TRUNCATED",
+                       meetingId=meeting_id,
+                       message="Response hit max_tokens - increase max_tokens_override or reduce transcript length")
+        raise ValueError(f"Response truncated at max_tokens for meeting {meeting_id}")
+
+    validated_json = tool_use_block["input"]
+
+    # Inject metadata fields
+    validated_json.setdefault("check_schema_version", CASE_CHECK_SCHEMA_VERSION)
+    validated_json.setdefault("session_type", "starter_session")
+    validated_json.setdefault("checklist_version", "1")
+    validated_json.setdefault("meeting_id", meeting_id)
+    validated_json.setdefault("model_version", MODEL_VERSION)
+    validated_json.setdefault("prompt_version", PROMPT_VERSION)
+
+    # Defensive parsing for stringified fields
+    validated_json = helper.parse_stringified_fields(
+        data=validated_json,
+        fields=["results"],
+        meeting_id=meeting_id,
+        context="case_check"
+    )
+
+    # Calculate evidence_spans if missing
+    if "results" in validated_json and isinstance(validated_json["results"], list):
+        for result_item in validated_json["results"]:
+            if isinstance(result_item, dict):
+                evidence_quote = result_item.get("evidence_quote", "")
+                evidence_spans = result_item.get("evidence_spans", [])
+
+                if evidence_quote and not evidence_spans:
+                    clean_quote = evidence_quote.strip()
+                    if clean_quote:
+                        pos = full_transcript.find(clean_quote)
+                        if pos != -1:
+                            result_item["evidence_spans"] = [[pos, pos + len(clean_quote)]]
+                        else:
+                            short_quote = clean_quote[:50]
+                            pos = full_transcript.find(short_quote)
                             if pos != -1:
                                 result_item["evidence_spans"] = [[pos, pos + len(clean_quote)]]
                             else:
-                                # Try fuzzy match with first 50 chars
-                                short_quote = clean_quote[:50]
-                                pos = chunk.find(short_quote)
-                                if pos != -1:
-                                    result_item["evidence_spans"] = [[pos, pos + len(clean_quote)]]
-                                else:
-                                    # No match found, set empty span
-                                    result_item["evidence_spans"] = []
-                                    helper.log_json("WARNING", "EVIDENCE_QUOTE_NOT_FOUND_IN_CHUNK",
-                                                   meetingId=meeting_id,
-                                                   check_id=result_item.get("id"),
-                                                   quote_preview=clean_quote[:100])
+                                result_item["evidence_spans"] = []
+                                helper.log_json("WARNING", "EVIDENCE_QUOTE_NOT_FOUND",
+                                               meetingId=meeting_id,
+                                               check_id=result_item.get("id"),
+                                               quote_preview=clean_quote[:100])
 
-        usage = resp.get("usage", {})
+    usage = resp.get("usage", {})
+    cost_breakdown = helper.calculate_bedrock_cost(usage, model_id="claude-3-7-sonnet")
 
-        # Log with cache metrics for cost tracking
-        log_data = {
-            "meetingId": meeting_id,
-            "latency_ms": latency_ms,
-            "stop_reason": stop_reason,
-            "input_tokens": usage.get("inputTokens", 0),
-            "output_tokens": usage.get("outputTokens", 0),
-            "structured_output": True
-        }
+    log_data = {
+        "meetingId": meeting_id,
+        "operation": "case_check",
+        "latency_ms": latency_ms,
+        "stop_reason": stop_reason,
+        "input_tokens": usage.get("inputTokens", 0),
+        "output_tokens": usage.get("outputTokens", 0),
+        "structured_output": True,
+        "cost_usd": cost_breakdown["total_cost"],
+        "input_cost_usd": cost_breakdown["input_cost"],
+        "output_cost_usd": cost_breakdown["output_cost"]
+    }
 
-        # Add cache metrics if available (only present when using prompt caching)
-        if "cacheReadInputTokens" in usage:
-            log_data["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
-            log_data["cache_creation_tokens"] = usage.get("cacheCreationInputTokens", 0)
-            # Calculate cost savings (cache reads are 90% cheaper)
-            cache_savings = usage.get("cacheReadInputTokens", 0) * 0.9
-            log_data["estimated_cache_savings_tokens"] = int(cache_savings)
+    if "cacheReadInputTokens" in usage:
+        log_data["cache_read_tokens"] = usage.get("cacheReadInputTokens", 0)
+        log_data["cache_creation_tokens"] = usage.get("cacheCreationInputTokens", 0)
+        log_data["cache_read_cost_usd"] = cost_breakdown["cache_read_cost"]
+        log_data["cache_write_cost_usd"] = cost_breakdown["cache_write_cost"]
+        log_data["cache_savings_usd"] = cost_breakdown["cache_savings"]
 
-        helper.log_json("INFO", f"CHUNK_{idx + 1}_LLM_OK", **log_data)
+    helper.log_json("INFO", "CASE_CHECK_LLM_OK", **log_data)
 
-        # Validate with Pydantic (should always succeed with tool use)
-        parsed = CaseCheckPayload.model_validate(validated_json)
-        chunk_results.append(parsed.model_dump())
+    # Validate with Pydantic
+    parsed = CaseCheckPayload.model_validate(validated_json)
+    data = parsed.model_dump()
 
-    # Check if we have any successful chunks
-    if not chunk_results:
-        raise ValueError(f"No chunks processed successfully for meeting {meeting_id}. "
-                        f"Total chunks: {num_chunks}, Truncated/failed: {len(truncated_chunks)}")
-
-    # Merge results from all chunks
-    if len(chunk_results) > 1:
-        helper.log_json("INFO", "MERGING_CHUNK_RESULTS",
-                       meetingId=meeting_id,
-                       total_chunks=num_chunks,
-                       successful_chunks=len(chunk_results),
-                       truncated_chunks=len(truncated_chunks))
-        data = merge_case_check_results(chunk_results)
-    else:
-        data = chunk_results[0]
-
-    # Normalize data
     data["meeting_id"] = meeting_id
     data["model_version"] = MODEL_VERSION
     data["prompt_version"] = PROMPT_VERSION
-
-    # Add truncation metadata if any chunks were truncated
-    if truncated_chunks:
-        if "overall" not in data:
-            data["overall"] = {}
-        data["overall"]["truncated_chunks"] = truncated_chunks
-        data["overall"]["has_truncation"] = True
-        helper.log_json("WARNING", "CASE_CHECK_HAD_TRUNCATION",
-                       meetingId=meeting_id,
-                       truncated_chunks=truncated_chunks,
-                       message="Some chunks were truncated - results may be incomplete")
 
     severity_by_id = {c["id"]: c.get("severity", "low") for c in STARTER_SESSION_CHECKS}
     has_high_severity_failures = False

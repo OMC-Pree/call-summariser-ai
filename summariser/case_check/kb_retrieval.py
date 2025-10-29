@@ -2,15 +2,16 @@
 Knowledge Base Retrieval Module for Case Check Examples
 Uses AWS Bedrock Knowledge Base to retrieve relevant assessment examples
 """
-import boto3
 import json
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+
 from utils import helper
+from utils.aws_clients import AWSClients
 from constants import *
 
-# Initialize Bedrock clients
-bedrock_agent_runtime = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
+# Use centralized AWS client
+bedrock_agent_runtime = AWSClients.bedrock_agent_runtime()
 
 # Knowledge Base Configuration
 # KB_ID should be passed as parameter to functions (loaded from Parameter Store in app.py)

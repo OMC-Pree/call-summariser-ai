@@ -11,10 +11,10 @@ DEFAULT_REGION = "eu-west-2"
 AWS_REGION = os.getenv("AWS_REGION", DEFAULT_REGION)
 
 # Model Configuration
-# Using Claude 3.5 Sonnet v2 for higher output token limits (8192 vs 4096)
-# Required for case check with 24 detailed compliance checks
-DEFAULT_MODEL_VERSION = "bedrock:claude-3-5-sonnet-20241022-v2"
-DEFAULT_MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# Using Claude 3.7 Sonnet for highest reliability and output token limits
+# Available in eu-west-2, much more reliable tool use than Claude 3 Sonnet
+DEFAULT_MODEL_VERSION = "bedrock:claude-3-7-sonnet-20250219"
+DEFAULT_MODEL_ID = "anthropic.claude-3-7-sonnet-20250219-v1:0"
 DEFAULT_PROMPT_VERSION = "2025-09-22-a"
 DEFAULT_INSIGHTS_VERSION = "2025-08-30-a"
 DEFAULT_SCHEMA_VERSION = "1.2"

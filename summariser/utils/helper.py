@@ -18,7 +18,58 @@ bedrock_config = Config(
 )
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION, config=bedrock_config)
 
-# strip_code_fences and extract_first_json removed - no longer needed with structured output
+# Claude 3.7 Sonnet pricing (AWS Bedrock, as of 2025)
+BEDROCK_PRICING = {
+    "claude-3-7-sonnet": {
+        "input_per_1k": 0.003,      # $3.00 per 1M tokens
+        "output_per_1k": 0.015,     # $15.00 per 1M tokens
+        "cache_read_per_1k": 0.0003,    # $0.30 per 1M tokens (90% cheaper)
+        "cache_write_per_1k": 0.00375   # $3.75 per 1M tokens
+    }
+}
+
+
+def calculate_bedrock_cost(usage: dict, model_id: str = "claude-3-7-sonnet") -> dict:
+    """
+    Calculate AWS Bedrock API cost from token usage.
+
+    Args:
+        usage: Usage dict from Bedrock response with token counts
+        model_id: Model identifier for pricing lookup
+
+    Returns:
+        Dict with cost breakdown and total
+    """
+    pricing = BEDROCK_PRICING.get(model_id, BEDROCK_PRICING["claude-3-7-sonnet"])
+
+    input_tokens = usage.get("inputTokens", 0)
+    output_tokens = usage.get("outputTokens", 0)
+    cache_read_tokens = usage.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage.get("cacheCreationInputTokens", 0)
+
+    # Calculate costs
+    input_cost = (input_tokens / 1000) * pricing["input_per_1k"]
+    output_cost = (output_tokens / 1000) * pricing["output_per_1k"]
+    cache_read_cost = (cache_read_tokens / 1000) * pricing["cache_read_per_1k"]
+    cache_write_cost = (cache_write_tokens / 1000) * pricing["cache_write_per_1k"]
+
+    total_cost = input_cost + output_cost + cache_read_cost + cache_write_cost
+
+    # Calculate savings from caching (vs non-cached input)
+    cache_savings = 0
+    if cache_read_tokens > 0:
+        non_cached_cost = (cache_read_tokens / 1000) * pricing["input_per_1k"]
+        cache_savings = non_cached_cost - cache_read_cost
+
+    return {
+        "input_cost": round(input_cost, 6),
+        "output_cost": round(output_cost, 6),
+        "cache_read_cost": round(cache_read_cost, 6),
+        "cache_write_cost": round(cache_write_cost, 6),
+        "cache_savings": round(cache_savings, 6),
+        "total_cost": round(total_cost, 6)
+    }
+
 
 def log_json(level: str, msg: str, **kwargs):
     """
