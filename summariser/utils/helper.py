@@ -222,6 +222,31 @@ def parse_stringified_fields(
                         context=context or "unknown",
                         message=f"{field} field was returned as string, successfully parsed")
             except json.JSONDecodeError as e:
+                # Check if it's multiple line-separated JSON arrays
+                # Claude sometimes returns: ["item1"]\n["item2"]\n["item3"]
+                if '\n' in stripped and "Extra data" in str(e):
+                    try:
+                        merged_array = []
+                        for line in stripped.split('\n'):
+                            line = line.strip()
+                            if line:
+                                parsed_line = json.loads(line)
+                                if isinstance(parsed_line, list):
+                                    merged_array.extend(parsed_line)
+                                else:
+                                    merged_array.append(parsed_line)
+                        data[field] = merged_array
+                        log_json("WARNING", "FIELD_WAS_MULTILINE_JSON",
+                                meetingId=meeting_id,
+                                field=field,
+                                context=context or "unknown",
+                                items_merged=len(merged_array),
+                                message=f"{field} was multiple line-separated JSON arrays, merged successfully")
+                        continue
+                    except Exception:
+                        # If merge fails, fall through to original error
+                        pass
+
                 log_json("ERROR", "FIELD_PARSE_FAILED",
                         meetingId=meeting_id,
                         field=field,

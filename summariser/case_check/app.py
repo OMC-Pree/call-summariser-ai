@@ -506,11 +506,22 @@ def lambda_handler(event, context):
         if not tool_use_block:
             raise ValueError(f"No tool use block found in response for chunk {idx + 1}")
 
-        # Get validated JSON from tool input
+        # Check if response was truncated BEFORE parsing
+        # If truncated, the JSON will be malformed and parsing will fail
+        stop_reason = resp.get("stopReason", "")
+        if stop_reason == "max_tokens":
+            truncated_chunks.append(idx + 1)
+            helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
+                           meetingId=meeting_id,
+                           chunk_idx=idx + 1,
+                           message="Chunk response hit max_tokens - skipping chunk to avoid partial/malformed data")
+            # Skip this truncated chunk - partial compliance data is unreliable
+            continue
+
+        # Get validated JSON from tool input (only if not truncated)
         validated_json = tool_use_block["input"]
 
         # Inject metadata fields that LLM shouldn't generate
-        # The LLM should only focus on the actual case check results
         validated_json.setdefault("check_schema_version", CASE_CHECK_SCHEMA_VERSION)
         validated_json.setdefault("session_type", "starter_session")
         validated_json.setdefault("checklist_version", "1")
@@ -535,8 +546,6 @@ def lambda_handler(event, context):
 
                     # If evidence_spans is empty but we have evidence_quote, calculate it
                     if evidence_quote and not evidence_spans:
-                        # Find the quote in the chunk
-                        # Clean up the quote for matching
                         clean_quote = evidence_quote.strip()
                         if clean_quote:
                             pos = chunk.find(clean_quote)
@@ -555,17 +564,6 @@ def lambda_handler(event, context):
                                                    meetingId=meeting_id,
                                                    check_id=result_item.get("id"),
                                                    quote_preview=clean_quote[:100])
-
-        # Check if response was truncated
-        stop_reason = resp.get("stopReason")
-        if stop_reason == "max_tokens":
-            truncated_chunks.append(idx + 1)
-            helper.log_json("WARNING", "CHUNK_CASECHECK_TRUNCATED",
-                           meetingId=meeting_id,
-                           chunk_idx=idx + 1,
-                           message="Chunk response hit max_tokens - skipping chunk to avoid partial/malformed data")
-            # Skip this truncated chunk - partial compliance data is unreliable
-            continue
 
         usage = resp.get("usage", {})
 
