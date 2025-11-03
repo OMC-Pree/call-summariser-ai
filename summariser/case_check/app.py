@@ -234,6 +234,7 @@ def lambda_handler(event, context):
     Input:
         - redactedTranscriptKey: str (S3 key to redacted transcript)
         - meetingId: str
+        - forceReprocess: bool (optional, default False)
 
     Output:
         - caseData: dict
@@ -242,12 +243,39 @@ def lambda_handler(event, context):
     """
     transcript_key = event.get("redactedTranscriptKey")
     meeting_id = event.get("meetingId")
+    force_reprocess = event.get("forceReprocess", False)
 
     if not transcript_key:
         raise ValueError("redactedTranscriptKey is required")
 
     if not meeting_id:
         raise ValueError("meetingId is required")
+
+    # Determine expected case check S3 key
+    now = datetime.now(timezone.utc)
+    if ATHENA_PARTITIONED:
+        case_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
+    else:
+        case_key = f"{S3_PREFIX}/{now.year:04d}/{now.month:02d}/{meeting_id}/case_check.v{CASE_CHECK_SCHEMA_VERSION}.json"
+
+    # Idempotency check: If case check already exists and not forcing reprocess, return it
+    if not force_reprocess:
+        try:
+            response = s3.get_object(Bucket=SUMMARY_BUCKET, Key=case_key)
+            case_data = json.loads(response['Body'].read().decode('utf-8'))
+            pass_rate = float(case_data.get("overall", {}).get("pass_rate", 0.0))
+            helper.log_json("INFO", "CASE_CHECK_EXISTS", meetingId=meeting_id, caseKey=case_key, reused=True)
+            return {
+                "caseData": case_data,
+                "caseKey": case_key,
+                "passRate": pass_rate
+            }
+        except s3.exceptions.NoSuchKey:
+            # File doesn't exist, proceed with case check
+            pass
+        except Exception as e:
+            # Log error but continue with processing
+            helper.log_json("WARN", "CASE_CHECK_CHECK_FAILED", meetingId=meeting_id, error=str(e))
 
     # Fetch transcript from S3
     full_transcript = get_transcript_from_s3(transcript_key)

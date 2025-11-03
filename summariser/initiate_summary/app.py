@@ -80,9 +80,6 @@ def lambda_handler(event, context):
             field="zoomMeetingId"
         )
 
-    # Extract case checking option from request (optional)
-    enable_case_check = bool(body.get("enableCaseCheck", False))
-
     # Extract force reprocess option from request (optional)
     force_reprocess = bool(body.get("forceReprocess", False))
 
@@ -98,7 +95,7 @@ def lambda_handler(event, context):
     _mark_queued(meeting_id, force=force_reprocess)
 
     # 3) Start Step Functions execution
-    execution_arn = _start_step_function(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess)
+    execution_arn = _start_step_function(meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, force_reprocess)
     logger.info(f"Step Functions execution started for meeting {meeting_id}: {execution_arn}")
     return _response(202, {"message": "Workflow started", "meetingId": meeting_id, "executionArn": execution_arn})
 
@@ -186,13 +183,12 @@ def _mark_queued(meeting_id: str, force: bool = False) -> None:
                 correlation_id=meeting_id
             )
 
-def _start_step_function(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> str:
+def _start_step_function(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, force_reprocess: bool = False) -> str:
     """Start Step Functions execution"""
     input_data = {
         "meetingId": meeting_id,
         "coachName": coach_name,
         "employerName": employer_name,
-        "enableCaseCheck": enable_case_check,
         "forceReprocess": force_reprocess
     }
 

@@ -64,6 +64,7 @@ def lambda_handler(event, context):
         - transcriptKey: str (S3 key to transcript)
         - meetingId: str
         - source: str (optional, passed through)
+        - forceReprocess: bool (optional, default False)
 
     Output:
         - meetingId: str (passed through for state optimization)
@@ -74,12 +75,38 @@ def lambda_handler(event, context):
     transcript_key = event.get("transcriptKey")
     meeting_id = event.get("meetingId")
     source = event.get("source")  # Pass through from previous state
+    force_reprocess = event.get("forceReprocess", False)
 
     if not transcript_key:
         raise ValidationError("transcriptKey is required")
 
     if not meeting_id:
         raise ValidationError("meetingId is required")
+
+    # Determine expected redacted transcript S3 key
+    now = datetime.now(timezone.utc)
+    if ATHENA_PARTITIONED:
+        s3_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/redacted_transcript.txt"
+    else:
+        s3_key = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}/redacted_transcript.txt"
+
+    # Idempotency check: If redacted transcript already exists and not forcing reprocess, return it
+    if not force_reprocess:
+        try:
+            s3.head_object(Bucket=SUMMARY_BUCKET, Key=s3_key)
+            helper.log_json("INFO", "REDACTED_TRANSCRIPT_EXISTS", meetingId=meeting_id, redactedTranscriptKey=s3_key, reused=True)
+            return {
+                "meetingId": meeting_id,
+                "source": source,
+                "redactedTranscriptKey": s3_key,
+                "piiEntityCount": 0  # We don't know the count from existing file, but it's not critical
+            }
+        except s3.exceptions.NoSuchKey:
+            # File doesn't exist, proceed with PII detection
+            pass
+        except Exception as e:
+            # Log error but continue with processing
+            helper.log_json("WARN", "REDACTED_TRANSCRIPT_CHECK_FAILED", meetingId=meeting_id, error=str(e))
 
     # Read transcript from S3
     helper.log_json("INFO", "LOADING_TRANSCRIPT_FROM_S3", meetingId=meeting_id, transcriptKey=transcript_key)
@@ -93,12 +120,6 @@ def lambda_handler(event, context):
     redacted_transcript = redact_text(transcript, pii_entities)
 
     # Save redacted transcript to S3 to avoid Step Functions state size limit
-    now = datetime.now(timezone.utc)
-    if ATHENA_PARTITIONED:
-        s3_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/redacted_transcript.txt"
-    else:
-        s3_key = f"{S3_PREFIX}/{now:%Y}/{now:%m}/{meeting_id}/redacted_transcript.txt"
-
     s3.put_object(
         Bucket=SUMMARY_BUCKET,
         Key=s3_key,

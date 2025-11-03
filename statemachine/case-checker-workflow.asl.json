@@ -1,5 +1,5 @@
 {
-  "Comment": "AI-powered call summariser workflow with fan-out, gates, and A2I integration",
+  "Comment": "Independent case checking workflow for compliance validation",
   "StartAt": "UpdateStatusProcessing",
   "States": {
     "UpdateStatusProcessing": {
@@ -11,11 +11,23 @@
           "meetingId.$": "$.meetingId",
           "status": "PROCESSING",
           "force.$": "$.forceReprocess",
+          "workflowType": "case_check",
           "metadata": {}
         }
       },
       "ResultPath": null,
-      "Next": "FetchTranscript"
+      "Next": "CheckTranscriptSource"
+    },
+    "CheckTranscriptSource": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.redactedTranscriptKey",
+          "IsPresent": true,
+          "Next": "PerformCaseCheck"
+        }
+      ],
+      "Default": "FetchTranscript"
     },
     "FetchTranscript": {
       "Type": "Task",
@@ -88,8 +100,6 @@
       "ResultPath": "$",
       "ResultSelector": {
         "meetingId.$": "$.Payload.meetingId",
-        "coachName.$": "$$.Execution.Input.coachName",
-        "employerName.$": "$$.Execution.Input.employerName",
         "source.$": "$.Payload.source",
         "redactedTranscriptKey.$": "$.Payload.redactedTranscriptKey",
         "piiEntityCount.$": "$.Payload.piiEntityCount"
@@ -102,22 +112,23 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "GenerateSummary"
+      "Next": "PerformCaseCheck"
     },
-    "GenerateSummary": {
+    "PerformCaseCheck": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${SummariseFunctionArn}",
+        "FunctionName": "${CaseCheckFunctionArn}",
         "Payload": {
           "redactedTranscriptKey.$": "$.redactedTranscriptKey",
           "meetingId.$": "$.meetingId",
           "forceReprocess.$": "$$.Execution.Input.forceReprocess"
         }
       },
-      "ResultPath": "$.summaryResult",
+      "ResultPath": "$.caseCheckResult",
       "ResultSelector": {
-        "summaryKey.$": "$.Payload.summaryKey"
+        "caseKey.$": "$.Payload.caseKey",
+        "passRate.$": "$.Payload.passRate"
       },
       "Retry": [
         {
@@ -140,23 +151,34 @@
           "Next": "HandleFailure"
         }
       ],
-      "Next": "ValidateRepairSummary"
+      "Next": "A2IGateDecision"
     },
-    "ValidateRepairSummary": {
+    "A2IGateDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.caseCheckResult.passRate",
+          "NumericLessThan": 0.5,
+          "Next": "StartA2IReview"
+        }
+      ],
+      "Default": "EmitCompletionEvents"
+    },
+    "StartA2IReview": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${ValidateRepairFunctionArn}",
+        "FunctionName": "${A2IReviewFunctionArn}",
         "Payload": {
-          "summaryKey.$": "$.summaryResult.summaryKey",
           "meetingId.$": "$.meetingId",
-          "validationType": "summary"
+          "caseCheckKey.$": "$.caseCheckResult.caseKey",
+          "redactedTranscriptKey.$": "$.redactedTranscriptKey"
         }
       },
-      "ResultPath": "$.validationResult",
+      "ResultPath": "$.a2iResult",
       "ResultSelector": {
-        "validatedDataKey.$": "$.Payload.validatedDataKey",
-        "isValid.$": "$.Payload.isValid"
+        "humanLoopName.$": "$.Payload.humanLoopName",
+        "status.$": "$.Payload.status"
       },
       "Retry": [
         {
@@ -166,62 +188,54 @@
           "BackoffRate": 1.5
         }
       ],
-      "Next": "CheckSummaryValid"
-    },
-    "CheckSummaryValid": {
-      "Type": "Choice",
-      "Choices": [
+      "Catch": [
         {
-          "Variable": "$.validationResult.validatedDataKey",
-          "IsNull": true,
-          "Next": "HandleSummaryInvalid"
-        },
-        {
-          "Variable": "$.validationResult.isValid",
-          "BooleanEquals": false,
-          "Next": "HandleSummaryInvalid"
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.a2iError",
+          "Next": "EmitCompletionEvents"
         }
       ],
-      "Default": "PersistSummary"
+      "Next": "EmitReviewEvents"
     },
-    "HandleSummaryInvalid": {
-      "Type": "Pass",
-      "Comment": "Summary validation failed, cannot proceed to persist",
-      "Result": {
-        "Cause": "Summary generation or validation failed"
+    "EmitReviewEvents": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "call-summariser",
+            "DetailType": "CaseCheck.InReview",
+            "Detail": {
+              "meetingId.$": "$.meetingId",
+              "humanLoopName.$": "$.a2iResult.humanLoopName",
+              "passRate.$": "$.caseCheckResult.passRate",
+              "timestamp.$": "$$.State.EnteredTime"
+            },
+            "EventBusName": "${EventBusName}"
+          }
+        ]
       },
-      "ResultPath": "$.error",
-      "Next": "HandleFailure"
+      "ResultPath": null,
+      "Next": "UpdateStatusInReview"
     },
-    "PersistSummary": {
+    "UpdateStatusInReview": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${PersistSummaryFunctionArn}",
+        "FunctionName": "${UpdateStatusFunctionArn}",
         "Payload": {
           "meetingId.$": "$.meetingId",
-          "coachName.$": "$.coachName",
-          "employerName.$": "$.employerName",
-          "source.$": "$.source",
-          "forceReprocess.$": "$$.Execution.Input.forceReprocess",
-          "validatedDataKey.$": "$.validationResult.validatedDataKey"
+          "status": "IN_REVIEW",
+          "workflowType": "case_check",
+          "metadata": {
+            "a2iCaseLoop.$": "$.a2iResult.humanLoopName",
+            "caseCheckKey.$": "$.caseCheckResult.caseKey",
+            "casePassRate.$": "$.caseCheckResult.passRate"
+          }
         }
       },
-      "ResultPath": "$.persistResult",
-      "ResultSelector": {
-        "summaryKey.$": "$.Payload.summaryKey",
-        "latestKey.$": "$.Payload.latestKey",
-        "metadata.$": "$.Payload.metadata"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Next": "EmitCompletionEvents"
+      "ResultPath": null,
+      "End": true
     },
     "EmitCompletionEvents": {
       "Type": "Task",
@@ -230,12 +244,43 @@
         "Entries": [
           {
             "Source": "call-summariser",
-            "DetailType": "Summary.Completed",
+            "DetailType": "CaseCheck.Completed",
             "Detail": {
               "meetingId.$": "$.meetingId",
-              "sentiment.$": "$.persistResult.metadata.sentiment",
-              "actionCount.$": "$.persistResult.metadata.actionCount",
-              "summaryKey.$": "$.persistResult.summaryKey",
+              "passRate.$": "$.caseCheckResult.passRate",
+              "caseKey.$": "$.caseCheckResult.caseKey",
+              "timestamp.$": "$$.State.EnteredTime"
+            },
+            "EventBusName": "${EventBusName}"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Next": "CheckCaseFlagged"
+    },
+    "CheckCaseFlagged": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.caseCheckResult.passRate",
+          "NumericLessThan": 0.7,
+          "Next": "EmitCaseFlaggedEvent"
+        }
+      ],
+      "Default": "UpdateStatusCompleted"
+    },
+    "EmitCaseFlaggedEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "call-summariser",
+            "DetailType": "CaseCheck.Flagged",
+            "Detail": {
+              "meetingId.$": "$.meetingId",
+              "passRate.$": "$.caseCheckResult.passRate",
+              "caseKey.$": "$.caseCheckResult.caseKey",
               "timestamp.$": "$$.State.EnteredTime"
             },
             "EventBusName": "${EventBusName}"
@@ -253,12 +298,10 @@
         "Payload": {
           "meetingId.$": "$.meetingId",
           "status": "COMPLETED",
+          "workflowType": "case_check",
           "metadata": {
-            "summaryKey.$": "$.persistResult.summaryKey",
-            "latestSummaryKey.$": "$.persistResult.latestKey",
-            "sentiment.$": "$.persistResult.metadata.sentiment",
-            "actionCount.$": "$.persistResult.metadata.actionCount",
-            "source.$": "$.source"
+            "caseCheckKey.$": "$.caseCheckResult.caseKey",
+            "casePassRate.$": "$.caseCheckResult.passRate"
           }
         }
       },
@@ -273,6 +316,7 @@
         "Payload": {
           "meetingId.$": "$.meetingId",
           "status": "FAILED",
+          "workflowType": "case_check",
           "metadata": {
             "error.$": "$.error.Cause"
           }
@@ -283,8 +327,8 @@
     },
     "FailState": {
       "Type": "Fail",
-      "Error": "WorkflowFailed",
-      "Cause": "The summariser workflow failed. Check CloudWatch logs for details."
+      "Error": "CaseCheckWorkflowFailed",
+      "Cause": "The case checker workflow failed. Check CloudWatch logs for details."
     }
   }
 }

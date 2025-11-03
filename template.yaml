@@ -163,6 +163,36 @@ Resources:
         - EventBridgePutEventsPolicy:
             EventBusName: !Ref SummariserEventBus
 
+  ### Case Check State Machine (Independent) ###
+  CaseCheckerStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: case-checker-workflow
+      DefinitionUri: statemachine/case-checker-workflow.asl.json
+      DefinitionSubstitutions:
+        FetchTranscriptFunctionArn: !GetAtt FetchTranscriptFunction.Arn
+        NormaliseRolesFunctionArn: !GetAtt NormaliseRolesFunction.Arn
+        PIIDetectRedactFunctionArn: !GetAtt PIIDetectRedactFunction.Arn
+        CaseCheckFunctionArn: !GetAtt CaseCheckFunction.Arn
+        A2IReviewFunctionArn: !GetAtt A2IReviewFunction.Arn
+        UpdateStatusFunctionArn: !GetAtt UpdateStatusFunction.Arn
+        EventBusName: !Ref SummariserEventBus
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FetchTranscriptFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NormaliseRolesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PIIDetectRedactFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CaseCheckFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref A2IReviewFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateStatusFunction
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref SummariserEventBus
+
   ### Step Functions Workflow Lambda Functions ###
   FetchTranscriptFunction:
     Type: AWS::Serverless::Function
@@ -388,6 +418,35 @@ Resources:
                 - states:StartExecution
               Resource: !Ref SummariserStateMachine
 
+  ### Initiate Case Check Lambda (API Gateway Trigger) ###
+  InitiateCaseCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: initiate_case_check.app.lambda_handler
+      Environment:
+        Variables:
+          CASE_CHECK_STATE_MACHINE_ARN: !Ref CaseCheckerStateMachine
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /case-check
+            Method: post
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryJobTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref CaseCheckerStateMachine
+
 
   ### Get Summary URL Lambda (returns signed URL for summary) ###
   GetSummaryUrlFunction:
@@ -522,73 +581,10 @@ Resources:
               Resource:
                 - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
 
-  # GradioDashboardFunction:
-  #   Type: AWS::Serverless::Function
-  #   Properties:
-  #     Environment:
-  #       Variables:
-  #         PORT: "8080"
-  #         AWS_LWA_PORT: "8080"
-  #         AWS_LWA_READINESS_CHECK_PORT: "8080"
-  #         AWS_LWA_READINESS_CHECK_PATH: /
-  #         ATHENA_REGION: !Ref AWS::Region
-  #         ATHENA_WORKGROUP: primary
-  #         ATHENA_S3_STAGING: !Sub "s3://${SummaryBucket}/athena-results/"
-  #         ATHENA_DATABASE: call_summaries
-  #         GRADIO_ROOT_PATH: /ui
-  #     PackageType: Image
-  #     Timeout: 30
-  #     MemorySize: 1024
-  #     AutoPublishAlias: live
-  #     ProvisionedConcurrencyConfig:
-  #       ProvisionedConcurrentExecutions: 1
-  #     EphemeralStorage:
-  #       Size: 1024
-  #     # 👇 Use FunctionUrlConfig instead of Events:FunctionUrl
-  #     FunctionUrlConfig:
-  #       AuthType: NONE
-  #       Cors:
-  #         AllowMethods: ["GET", "POST", "HEAD"]
-  #         AllowOrigins: ["*"]
-  #         AllowHeaders: ["*"]
-  #         MaxAge: 86400
-  #     Policies:
-  #       - Statement:
-  #           - Effect: Allow
-  #             Action:
-  #               - athena:StartQueryExecution
-  #               - athena:GetQueryExecution
-  #               - athena:GetQueryResults
-  #               - athena:ListWorkGroups
-  #               - athena:GetWorkGroup
-  #             Resource: "*"
-  #       - Statement:
-  #           - Effect: Allow
-  #             Action:
-  #               - glue:GetDatabase
-  #               - glue:GetDatabases
-  #               - glue:GetTable
-  #               - glue:GetTables
-  #               - glue:SearchTables
-  #             Resource: "*"
-  #       - Statement:
-  #           - Effect: Allow
-  #             Action: ["s3:ListBucket"]
-  #             Resource: !GetAtt SummaryBucket.Arn
-  #       - Statement:
-  #           - Effect: Allow
-  #             Action: ["s3:GetObject", "s3:PutObject"]
-  #             Resource: !Sub "${SummaryBucket.Arn}/athena-results/*"
-
-  #   Metadata:
-  #     Dockerfile: fe/Dockerfile
-  #     DockerContext: .
-  #     DockerTag: gradio-fe
 Outputs:
-  ApiUrl:
+  SummariseApiUrl:
     Description: "POST endpoint to start a new summary job"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/summarise"
-  # DashboardUrl:
-  #   # SAM creates an implicit AWS::Lambda::Url named <FunctionLogicalId>Url
-  #   Value: !GetAtt GradioDashboardFunctionUrl.FunctionUrl
-  #   Description: Public URL for the Gradio dashboard
+  CaseCheckApiUrl:
+    Description: "POST endpoint to start a case check job"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/case-check"

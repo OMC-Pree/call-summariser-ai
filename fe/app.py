@@ -25,6 +25,7 @@ print("ENV CHECK:", {
 # =========================================================
 API_BASE            = os.getenv("API_BASE", "https://zrjzpoao4d.execute-api.eu-west-2.amazonaws.com/Prod")
 SUMMARISE_URL       = f"{API_BASE}/summarise"
+CASE_CHECK_URL      = f"{API_BASE}/case-check"
 STATUS_URL          = f"{API_BASE}/status"
 SUMMARIES_URL       = f"{API_BASE}/summaries"
 CASE_URL            = f"{API_BASE}/case"
@@ -71,7 +72,7 @@ def _download_summary(download_url: str):
     except Exception:
         return r.text, None
 
-def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, enable_case_check: bool = False, force_reprocess: bool = False) -> str:
+def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, transcript: str, zoom_meeting_id: str, force_reprocess: bool = False) -> str:
     meeting_id = (meeting_id or "").strip()
     coach_name = (coach_name or "").strip()
     employer_name = (employer_name or "").strip()
@@ -118,15 +119,11 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
 
     payload = {"meetingId": meeting_id, "coachName": coach_name, "employerName": employer_name}
 
-    # Add case checking option
-    if enable_case_check:
-        payload["enableCaseCheck"] = True
-
     # Add force reprocess option
     if force_reprocess:
         payload["forceReprocess"] = True
 
-    print(f"Submitting payload with case checking {'enabled' if enable_case_check else 'disabled'}, force reprocess {'enabled' if force_reprocess else 'disabled'}: {json.dumps(payload)}")
+    print(f"Submitting payload for summary with force reprocess {'enabled' if force_reprocess else 'disabled'}: {json.dumps(payload)}")
     if transcript and transcript.strip():
         payload["transcript"] = transcript.strip()
     else:
@@ -201,6 +198,258 @@ def submit_and_get_json(meeting_id: str, coach_name: str, employer_name: str, tr
         time.sleep(POLL_INTERVAL_SECS)
 
     return json.dumps({"error": f"Timed out after {POLL_TIMEOUT_SECS}s"}, indent=2)
+
+# =========================================================
+# Case Check Flow (Independent)
+# =========================================================
+def submit_case_check_and_get_json(zoom_meeting_id: str, coach_name: str, force_reprocess: bool = False) -> str:
+    """Submit a case check job independently from summarization"""
+    zoom_meeting_id = (zoom_meeting_id or "").strip().replace(" ", "")
+    coach_name = (coach_name or "").strip()
+
+    if not zoom_meeting_id:
+        return json.dumps({"error": "Please provide Zoom Meeting ID."}, indent=2)
+
+    # Use Zoom Meeting ID as the meeting ID for tracking
+    meeting_id = zoom_meeting_id
+
+    # Check for existing case check
+    if not force_reprocess:
+        try:
+            r = requests.get(CASE_URL, params={"meetingId": meeting_id}, timeout=10)
+            if r.status_code == 200:
+                case_response = r.json()
+                # Check if we have data directly in the response
+                if case_response.get("caseCheckStatus") == "COMPLETED" and case_response.get("data"):
+                    return json.dumps(case_response["data"], indent=2)
+                # Fallback: check for downloadUrl (legacy)
+                download_url = case_response.get("downloadUrl")
+                if download_url:
+                    body, derr = _download_summary(download_url)
+                    return body if derr is None else json.dumps({"error": derr}, indent=2)
+        except Exception as e:
+            pass
+
+    # Auto-discover redacted transcript from existing summary (optional optimization)
+    redacted_transcript_key = None
+    if not force_reprocess:
+        try:
+            status_resp = requests.get(STATUS_URL, params={"meetingId": meeting_id}, timeout=10)
+            if status_resp.status_code == 200:
+                status_data = status_resp.json()
+                if status_data.get("status") in ["COMPLETED", "IN_REVIEW"]:
+                    metadata = status_data.get("metadata", {})
+                    summary_key = metadata.get("summaryKey", "")
+                    if summary_key:
+                        redacted_transcript_key = summary_key.rsplit("/", 1)[0] + "/redacted_transcript.json"
+        except Exception as e:
+            print(f"Could not check for existing summary: {e}")
+
+    # Submit case check job
+    payload = {"meetingId": meeting_id, "zoomMeetingId": zoom_meeting_id}
+
+    if redacted_transcript_key:
+        payload["redactedTranscriptKey"] = redacted_transcript_key
+
+    if coach_name:
+        payload["coachName"] = coach_name
+
+    if force_reprocess:
+        payload["forceReprocess"] = True
+
+    try:
+        r = requests.post(CASE_CHECK_URL, json=payload, timeout=15)
+
+        if r.status_code == 200:
+            try:
+                response_body = r.json()
+                # Check if case check data was returned directly (already completed)
+                if response_body.get("completed") and response_body.get("data"):
+                    return json.dumps(response_body["data"], indent=2)
+                # Old behavior: warn about existing case check
+                if "already" in response_body.get("message", "").lower():
+                    return json.dumps({
+                        "message": "Case check already completed",
+                        "hint": "Data returned directly",
+                        "data": response_body.get("data", response_body)
+                    }, indent=2)
+            except:
+                pass
+
+        if r.status_code not in (200, 202):
+            return json.dumps({"error": "Submit failed", "status": r.status_code, "body": r.text}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Submit exception: {e}"}, indent=2)
+
+    # Poll for completion
+    start = time.time()
+    seen_processing = False
+
+    while time.time() - start < POLL_TIMEOUT_SECS:
+        try:
+            st_resp = requests.get(CASE_URL, params={"meetingId": meeting_id}, timeout=10)
+
+            # Handle 404 - could be job not found or S3 file missing
+            if st_resp.status_code == 404:
+                error_data = st_resp.json()
+                # If it's a real error (not just "not started yet"), return it
+                if "Case check file not found" in error_data.get("error", "") or "Case check key not found" in error_data.get("error", ""):
+                    return json.dumps({
+                        "error": "Case check completed but output not available",
+                        "details": error_data
+                    }, indent=2)
+                # Otherwise keep polling (job hasn't started yet)
+                time.sleep(POLL_INTERVAL_SECS)
+                continue
+
+            if st_resp.status_code != 200:
+                return json.dumps({"error": f"API error: {st_resp.status_code}", "details": st_resp.text[:200]}, indent=2)
+
+            case_response = st_resp.json()
+            case_status = case_response.get("caseCheckStatus", "UNKNOWN")
+
+            # Wait for force reprocess to start
+            if force_reprocess and not seen_processing:
+                if case_status in ["QUEUED", "PROCESSING"]:
+                    seen_processing = True
+                elif case_status == "COMPLETED":
+                    time.sleep(POLL_INTERVAL_SECS)
+                    continue
+
+            # Check if completed with data
+            if case_status in ["COMPLETED", "IN_REVIEW"] and case_response.get("data"):
+                case_data = case_response["data"]
+
+                # Add IN_REVIEW metadata if applicable
+                if case_status == "IN_REVIEW":
+                    case_data["_status"] = "IN_REVIEW"
+                    a2i_loop = case_response.get("a2iCaseLoop") or case_response.get("metadata", {}).get("a2iCaseLoop")
+                    if a2i_loop:
+                        case_data["_a2iHumanLoopName"] = a2i_loop
+                    if A2I_PORTAL_URL:
+                        case_data["_a2iPortalUrl"] = A2I_PORTAL_URL
+
+                return json.dumps(case_data, indent=2)
+
+            # Handle failed status
+            if case_status == "FAILED":
+                return json.dumps({
+                    "error": "Case check failed",
+                    "details": case_response.get("metadata", {}).get("error", "Unknown error")
+                }, indent=2)
+
+            # Still processing - continue polling
+            if case_status in ["QUEUED", "PROCESSING"]:
+                time.sleep(POLL_INTERVAL_SECS)
+                continue
+
+            # Unexpected status
+            return json.dumps({
+                "error": f"Unexpected status: {case_status}",
+                "response": case_response
+            }, indent=2)
+
+        except Exception as e:
+            print(f"Poll error: {e}")
+            time.sleep(POLL_INTERVAL_SECS)
+
+    return json.dumps({"error": f"Timed out after {POLL_TIMEOUT_SECS}s"}, indent=2)
+
+# =========================================================
+# UX Helper Functions
+# =========================================================
+def check_meeting_status(meeting_id: str):
+    """Check if meeting has existing summary and show real-time guidance"""
+    if not meeting_id or not meeting_id.strip():
+        return gr.update(value="", visible=False)
+
+    meeting_id = meeting_id.strip()
+
+    try:
+        # Quick status check
+        resp = requests.get(STATUS_URL, params={"meetingId": meeting_id}, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            status = data.get("status", "").upper()
+
+            if status == "COMPLETED":
+                return gr.update(
+                    value="✅ **Existing summary found!** Transcript will be reused automatically. No need to provide transcript data.",
+                    visible=True
+                )
+            elif status in ["PROCESSING", "QUEUED"]:
+                return gr.update(
+                    value="⏳ **Summary is currently being processed.** Wait for it to complete, then run case check.",
+                    visible=True
+                )
+            elif status == "IN_REVIEW":
+                return gr.update(
+                    value="👀 **Summary in human review.** You can still run case check on the existing transcript.",
+                    visible=True
+                )
+    except Exception as e:
+        print(f"Status check error: {e}")
+
+    # No summary found
+    return gr.update(
+        value="ℹ️ **No existing summary found.** Please provide transcript text OR Zoom Meeting ID below.",
+        visible=True
+    )
+
+
+def parse_and_display_result_status(result_json: str):
+    """Parse case check result and display color-coded status badge"""
+    if not result_json or not result_json.strip():
+        return gr.update(value="", visible=False)
+
+    try:
+        result = json.loads(result_json)
+
+        # Check for errors
+        if "error" in result:
+            return gr.update(
+                value='<div style="padding: 10px; background: #fee; border-left: 4px solid #d00; margin: 10px 0;"><strong>❌ Error</strong></div>',
+                visible=True
+            )
+
+        # Check for IN_REVIEW status
+        if result.get("_status") == "IN_REVIEW":
+            a2i_portal = result.get("_a2iPortalUrl", "")
+            portal_link = f' <a href="{a2i_portal}" target="_blank" style="color: #0066cc;">Open A2I Portal →</a>' if a2i_portal else ""
+            return gr.update(
+                value=f'<div style="padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; margin: 10px 0;"><strong>👀 In Human Review</strong> — Low pass rate flagged for review.{portal_link}</div>',
+                visible=True
+            )
+
+        # Get pass rate
+        pass_rate = result.get("passRate")
+        if pass_rate is None:
+            return gr.update(value="", visible=False)
+
+        pass_rate_pct = float(pass_rate) * 100
+
+        # Color-coded badge based on pass rate
+        if pass_rate_pct >= 70:
+            color = "#28a745"  # Green
+            icon = "✅"
+            label = "PASS"
+        elif pass_rate_pct >= 50:
+            color = "#ffc107"  # Yellow
+            icon = "⚠️"
+            label = "WARNING"
+        else:
+            color = "#dc3545"  # Red
+            icon = "❌"
+            label = "FAIL"
+
+        return gr.update(
+            value=f'<div style="padding: 10px; background: {color}22; border-left: 4px solid {color}; margin: 10px 0;"><strong>{icon} {label}</strong> — Pass Rate: {pass_rate_pct:.1f}%</div>',
+            visible=True
+        )
+
+    except Exception as e:
+        print(f"Error parsing result status: {e}")
+        return gr.update(value="", visible=False)
 
 # =========================================================
 # Dashboard helpers (API-backed) — version-aware
@@ -1208,40 +1457,55 @@ def get_case_for_meeting(meeting_id: str) -> str:
     try:
         r = requests.get(CASE_URL, params={"meetingId": meeting_id.strip()}, timeout=15)
         if r.status_code != 200:
-            return json.dumps({"error": "Failed to fetch case URL", "status": r.status_code, "body": r.text}, indent=2)
-        url = r.json().get("caseUrl")
-        if not url:
-            return json.dumps({"error": "No caseUrl for this meeting"}, indent=2)
-        cj = requests.get(url, timeout=20)
-        if cj.status_code != 200:
-            return json.dumps({"error": "Failed to fetch case JSON", "status": cj.status_code}, indent=2)
-        try:
-            case_data = cj.json()
+            return json.dumps({"error": "Failed to fetch case data", "status": r.status_code, "body": r.text}, indent=2)
 
-            # Check if this is the new direct case check format
-            if "results" in case_data and "overall" in case_data and "meeting_id" in case_data:
-                # New format: case check data is directly in the response
+        response_data = r.json()
+
+        # Check if case check is not completed yet
+        case_status = response_data.get("caseCheckStatus", "UNKNOWN")
+        if case_status != "COMPLETED":
+            return json.dumps({
+                "status": case_status,
+                "message": response_data.get("message", f"Case check status: {case_status}")
+            }, indent=2)
+
+        # New format: data is directly in the response
+        case_data = response_data.get("data")
+        if case_data:
+            # Check if this is the case check format
+            if "results" in case_data and "overall" in case_data:
+                return json.dumps(case_data, indent=2)
+            else:
                 return json.dumps(case_data, indent=2)
 
-            # Legacy format: extract case_json from inputContent
-            input_content = case_data.get("inputContent", {})
-            case_json_str = input_content.get("case_json")
+        # Fallback: try to fetch from presigned URL if provided (legacy support)
+        url = response_data.get("caseUrl")
+        if url:
+            cj = requests.get(url, timeout=20)
+            if cj.status_code != 200:
+                return json.dumps({"error": "Failed to fetch case JSON from URL", "status": cj.status_code}, indent=2)
+            try:
+                case_data = cj.json()
+                # Check if this is the case check format
+                if "results" in case_data and "overall" in case_data:
+                    return json.dumps(case_data, indent=2)
 
-            if case_json_str:
-                # Parse the case_json string and return it formatted
-                case_json = json.loads(case_json_str)
-                return json.dumps(case_json, indent=2)
-            else:
-                # Neither format found, return the raw response for debugging
-                return json.dumps({
-                    "error": "No case_json found in case check data",
-                    "available_keys": list(case_data.keys()),
-                    "raw_response": case_data
-                }, indent=2)
-        except json.JSONDecodeError as e:
-            return json.dumps({"error": f"Failed to parse case_json: {str(e)}"}, indent=2)
-        except Exception as e:
-            return json.dumps({"error": f"Failed to process case data: {str(e)}"}, indent=2)
+                # Legacy A2I format: extract case_json from inputContent
+                input_content = case_data.get("inputContent", {})
+                case_json_str = input_content.get("case_json")
+                if case_json_str:
+                    case_json = json.loads(case_json_str)
+                    return json.dumps(case_json, indent=2)
+            except Exception as e:
+                return json.dumps({"error": f"Failed to process case data from URL: {str(e)}"}, indent=2)
+
+        # No data found
+        return json.dumps({
+            "error": "No case check data available",
+            "available_keys": list(response_data.keys()),
+            "raw_response": response_data
+        }, indent=2)
+
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
 
@@ -1602,11 +1866,35 @@ def load_performance_metrics():
 # UI
 # =========================================================
 with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
-    gr.Markdown("### 🐙 Octopus Money — Coaching Session Summariser")
-    gr.Markdown("Provide *either* a transcript **or** a Zoom Meeting ID. Optionally enable case checking for AI quality analysis. Use the Dashboard tab for case checks; use Insights for Athena charts.")
+    gr.Markdown("### 🐙 Octopus Money — Coaching Session Summariser & Compliance Checker")
+    gr.Markdown("**Case Check**: Run independent compliance checks. | **Submit Summary**: Generate AI-powered meeting summaries. | **Dashboard**: View analytics and trends. | **Insights**: Query data with Athena.")
 
-    # ---------- Submit ----------
-    with gr.Tab("Submit"):
+    # ---------- Case Check (First Tab) ----------
+    with gr.Tab("Case Check"):
+        gr.Markdown("### ⚖️ Run Compliance Case Check")
+        gr.Markdown("Run independent AI-powered compliance checking on meeting transcripts.")
+
+        with gr.Row():
+            cc_zoom_meeting_id = gr.Textbox(label="Zoom Meeting ID (required)", placeholder="95682401830", info="Required - Zoom Meeting ID from call recording")
+            cc_coach_name = gr.Textbox(label="Coach Name (optional)", placeholder="e.g., John Doe", info="Optional - helps with Zoom API lookup")
+
+        cc_force_reprocess = gr.Checkbox(label="Force Reprocess", value=False, info="⚠️ Regenerate even if exists")
+        cc_force_warning = gr.Markdown("⚠️ **Warning:** Force reprocess will overwrite any existing case check data. This action cannot be undone.", visible=False)
+
+        cc_run_btn = gr.Button("Run Case Check", variant="primary")
+        cc_result_json = gr.Code(label="Case Check JSON", language="json", value="")
+
+        # Interactions
+        cc_run_btn.click(submit_case_check_and_get_json,
+                        inputs=[cc_zoom_meeting_id, cc_coach_name, cc_force_reprocess],
+                        outputs=[cc_result_json])
+        cc_force_reprocess.change(lambda x: gr.update(visible=x), inputs=[cc_force_reprocess], outputs=[cc_force_warning])
+
+    # ---------- Submit Summary ----------
+    with gr.Tab("Submit Summary"):
+        gr.Markdown("### 📝 Generate Meeting Summary")
+        gr.Markdown("Submit a meeting transcript or Zoom Meeting ID to generate an AI-powered summary with insights, action items, and themes.")
+
         with gr.Row():
             meeting_id   = gr.Textbox(label="OM Meeting ID", placeholder="om-2025-08-28-abc")
             coach_name   = gr.Textbox(label="Coach Name (optional)",     placeholder="e.g., John Doe")
@@ -1614,20 +1902,15 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
         transcript      = gr.Textbox(label="Transcript (paste text) — optional", lines=8)
         zoom_meeting_id = gr.Textbox(label="Zoom Meeting ID — optional", placeholder="95682401830")
 
-        with gr.Row():
-            enable_case_check = gr.Checkbox(label="Enable Case Checking", value=False, info="Run AI case quality analysis (requires A2I flow)")
-            force_reprocess = gr.Checkbox(label="Force Reprocess", value=False, info="⚠️ Overwrite existing summary and case check data")
+        force_reprocess = gr.Checkbox(label="Force Reprocess", value=False, info="⚠️ Overwrite existing summary data")
+        force_reprocess_warning = gr.Markdown("⚠️ **Warning:** Force reprocess will overwrite any existing summary data for this meeting. This action cannot be undone.", visible=False)
 
-        case_check_warning = gr.Markdown(f"⚠️ **Note:** Case checking enabled - will add additional processing time and requires human review. [Access A2I Portal]({A2I_PORTAL_URL}) to review case checks.", visible=False)
-        force_reprocess_warning = gr.Markdown("⚠️ **Warning:** Force reprocess will overwrite any existing summary and case check data for this meeting. This action cannot be undone.", visible=False)
-
-        run_btn         = gr.Button("Generate Summary")
+        run_btn         = gr.Button("Generate Summary", variant="primary")
 
         result_json     = gr.Code(label="Summary JSON", language="json", value="")
 
         # Interactions
-        run_btn.click(submit_and_get_json, inputs=[meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, enable_case_check, force_reprocess], outputs=[result_json])
-        enable_case_check.change(lambda x: gr.update(visible=x), inputs=[enable_case_check], outputs=[case_check_warning])
+        run_btn.click(submit_and_get_json, inputs=[meeting_id, coach_name, employer_name, transcript, zoom_meeting_id, force_reprocess], outputs=[result_json])
         force_reprocess.change(lambda x: gr.update(visible=x), inputs=[force_reprocess], outputs=[force_reprocess_warning])
 
         # Inspect existing meetings section
@@ -1647,6 +1930,7 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
 
         get_summary_btn.click(fn=get_summary_for_meeting, inputs=[mid_in], outputs=[summary_out])
         get_case_btn.click(fn=get_case_for_meeting, inputs=[mid_in], outputs=[case_out])
+
 
     # ---------- Dashboard (API) ----------
     with gr.Tab("Dashboard"):

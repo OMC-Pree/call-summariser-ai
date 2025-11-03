@@ -35,6 +35,7 @@ def lambda_handler(event, context):
         - status: str (QUEUED|PROCESSING|COMPLETED|FAILED|IN_REVIEW)
         - metadata: dict (optional additional fields)
         - force: bool (optional, default False)
+        - workflowType: str (optional: "summary" or "case_check")
 
     Output:
         - success: bool
@@ -44,6 +45,7 @@ def lambda_handler(event, context):
     status = event.get("status")
     metadata = event.get("metadata", {})
     force = event.get("force", False)
+    workflow_type = event.get("workflowType", "summary")  # Default to summary for backward compatibility
 
     if not meeting_id:
         raise ValidationError("meetingId is required")
@@ -55,15 +57,25 @@ def lambda_handler(event, context):
     now_iso = datetime.now(timezone.utc).isoformat()
     exp_ts = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
 
+    # Determine status field names based on workflow type
+    if workflow_type == "case_check":
+        status_field = "caseCheckStatus"
+        updated_field = "caseCheckUpdatedAt"
+    else:
+        status_field = "status"  # Summary workflow (default/legacy)
+        updated_field = "updatedAt"
+
     # Base SET expressions
-    set_parts = ["#s = :s", "updatedAt = :u", "expiresAt = :e"]
-    names = {"#s": "status"}
-    vals = {":s": status_up, ":u": now_iso, ":e": exp_ts}
+    set_parts = [f"#{status_field} = :{status_field}", f"{updated_field} = :u", "expiresAt = :e"]
+    names = {f"#{status_field}": status_field}
+    vals = {f":{status_field}": status_up, ":u": now_iso, ":e": exp_ts}
 
     # Add metadata fields
     if metadata:
         metadata = _to_ddb_numbers(metadata)
         for k, v in metadata.items():
+            # Metadata keys are already workflow-specific (e.g., caseCheckKey vs summaryKey)
+            # No need for additional prefixing
             names[f"#{k}"] = k
             vals[f":{k}"] = v
             set_parts.append(f"#{k} = :{k}")
@@ -80,12 +92,12 @@ def lambda_handler(event, context):
             ExpressionAttributeValues=vals,
         )
     else:
-        # Don't clobber COMPLETED status
+        # Don't clobber COMPLETED status for THIS workflow type
         vals[":done"] = "COMPLETED"
         JOB_TABLE_REF.update_item(
             Key={"meetingId": meeting_id},
             UpdateExpression=update_expr,
-            ConditionExpression="attribute_not_exists(#s) OR #s <> :done",
+            ConditionExpression=f"attribute_not_exists(#{status_field}) OR #{status_field} <> :done",
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=vals,
         )

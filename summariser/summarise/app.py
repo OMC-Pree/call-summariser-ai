@@ -134,6 +134,7 @@ def lambda_handler(event, context):
     Input:
         - redactedTranscriptKey: str (S3 key to redacted transcript)
         - meetingId: str
+        - forceReprocess: bool (optional, default False)
 
     Output:
         - summaryKey: str (S3 key to raw LLM output for validation step)
@@ -141,12 +142,40 @@ def lambda_handler(event, context):
     """
     transcript_key = event.get("redactedTranscriptKey")
     meeting_id = event.get("meetingId")
+    force_reprocess = event.get("forceReprocess", False)
 
     if not transcript_key:
         raise ValidationError("redactedTranscriptKey is required")
 
     if not meeting_id:
         raise ValidationError("meetingId is required")
+
+    # Determine expected summary S3 key
+    if ATHENA_PARTITIONED:
+        now = datetime.now(timezone.utc)
+        summary_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/raw_summary.json"
+    else:
+        summary_key = f"{S3_PREFIX}/supplementary/{meeting_id}/raw_summary.json"
+
+    # Idempotency check: If summary already exists and not forcing reprocess, return it
+    if not force_reprocess:
+        try:
+            s3.head_object(Bucket=SUMMARY_BUCKET, Key=summary_key)
+            helper.log_json("INFO", "SUMMARY_EXISTS", meetingId=meeting_id, summaryKey=summary_key, reused=True)
+            return {
+                "summaryKey": summary_key,
+                "tokenUsage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0
+                }
+            }
+        except s3.exceptions.NoSuchKey:
+            # File doesn't exist, proceed with generation
+            pass
+        except Exception as e:
+            # Log error but continue with processing
+            helper.log_json("WARN", "SUMMARY_CHECK_FAILED", meetingId=meeting_id, error=str(e))
 
     # Fetch transcript from S3
     transcript = get_transcript_from_s3(transcript_key)
@@ -273,12 +302,7 @@ def lambda_handler(event, context):
 
     helper.log_json("INFO", "LLM_SUMMARY_OK", **log_data)
 
-    # Save raw summary to supplementary folder for validation step
-    if ATHENA_PARTITIONED:
-        now = datetime.now(timezone.utc)
-        summary_key = f"{S3_PREFIX}/supplementary/version={SCHEMA_VERSION}/year={now.year}/month={now.month:02d}/meeting_id={meeting_id}/raw_summary.json"
-    else:
-        summary_key = f"{S3_PREFIX}/supplementary/{meeting_id}/raw_summary.json"
+    # Save raw summary to supplementary folder for validation step (summary_key already determined earlier)
     s3.put_object(
         Bucket=SUMMARY_BUCKET,
         Key=summary_key,
