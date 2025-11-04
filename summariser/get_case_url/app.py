@@ -20,7 +20,10 @@ def decimal_to_num(obj):
 
 def lambda_handler(event, context):
     try:
-        meeting_id = (event.get("queryStringParameters") or {}).get("meetingId")
+        query_params = event.get("queryStringParameters") or {}
+        meeting_id = query_params.get("meetingId")
+        filter_check_id = query_params.get("checkId")  # Optional filter parameter
+
         if not meeting_id:
             return _r(400, {"error": "Missing meetingId in query params"})
 
@@ -75,7 +78,36 @@ def lambda_handler(event, context):
                 "caseCheckKey": case_key
             })
 
-        # Return the case check data along with metadata
+        # Apply filter if checkId parameter is provided
+        if filter_check_id:
+            # Filter results to only include the specified check
+            filtered_results = [
+                r for r in case_check_data.get('results', [])
+                if r.get('id') == filter_check_id
+            ]
+
+            if not filtered_results:
+                return _r(404, {
+                    "error": "Check ID not found",
+                    "meetingId": meeting_id,
+                    "checkId": filter_check_id,
+                    "availableCheckIds": [r.get('id') for r in case_check_data.get('results', [])]
+                })
+
+            # Return filtered data
+            return _r(200, {
+                "meetingId": meeting_id,
+                "caseCheckStatus": case_check_status,
+                "checkId": filter_check_id,
+                "result": filtered_results[0],  # Single result
+                "overall": case_check_data.get('overall', {}),
+                "metadata": {
+                    "model_version": case_check_data.get('model_version'),
+                    "prompt_version": case_check_data.get('prompt_version')
+                }
+            })
+
+        # Return the full case check data along with metadata
         response = {
             "meetingId": meeting_id,
             "caseCheckStatus": case_check_status,

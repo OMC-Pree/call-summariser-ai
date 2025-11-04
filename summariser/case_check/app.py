@@ -382,13 +382,33 @@ def lambda_handler(event, context):
     validated_json.setdefault("model_version", MODEL_VERSION)
     validated_json.setdefault("prompt_version", PROMPT_VERSION)
 
-    # Defensive parsing for stringified fields
-    validated_json = helper.parse_stringified_fields(
-        data=validated_json,
-        fields=["results"],
-        meeting_id=meeting_id,
-        context="case_check"
-    )
+    # Defensive parsing for stringified fields (only if needed)
+    # Tool Use should return structured JSON, but handle edge cases
+    if "results" in validated_json and isinstance(validated_json["results"], str):
+        helper.log_json("WARNING", "RESULTS_AS_STRING",
+                       meetingId=meeting_id,
+                       message="results field unexpectedly returned as string, attempting to parse",
+                       stopReason=stop_reason,
+                       resultsLength=len(validated_json["results"]))
+
+        try:
+            validated_json = helper.parse_stringified_fields(
+                data=validated_json,
+                fields=["results"],
+                meeting_id=meeting_id,
+                context="case_check"
+            )
+        except ValueError as e:
+            # If parsing fails, log safe metadata without PII
+            helper.log_json("ERROR", "RESULTS_PARSE_FAILED",
+                           meetingId=meeting_id,
+                           parseError=str(e),
+                           stopReason=stop_reason,
+                           resultsLength=len(validated_json["results"]),
+                           resultsType=str(type(validated_json["results"])),
+                           message="Failed to parse results field - may be truncated or malformed")
+            raise ValueError(f"Failed to parse case check results for meeting {meeting_id}. "
+                           f"Stop reason: {stop_reason}. Error: {str(e)}") from e
 
     # Calculate evidence_spans if missing
     if "results" in validated_json and isinstance(validated_json["results"], list):

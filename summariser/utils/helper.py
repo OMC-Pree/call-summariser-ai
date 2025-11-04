@@ -295,7 +295,35 @@ def parse_stringified_fields(
                                 message=f"{field} was multiple line-separated JSON arrays, merged successfully")
                         continue
                     except Exception:
-                        # If merge fails, fall through to original error
+                        # If merge fails, fall through to repair logic
+                        pass
+
+                # Try to repair truncated/malformed JSON
+                # "Extra data" usually means incomplete array/object
+                if "Extra data" in str(e):
+                    try:
+                        # Find where valid JSON ends
+                        error_pos = e.pos if hasattr(e, 'pos') else None
+                        if error_pos:
+                            # Parse up to the error position
+                            valid_json = stripped[:error_pos].rstrip()
+                            # Try to close any open structures
+                            if valid_json.count('[') > valid_json.count(']'):
+                                valid_json += ']' * (valid_json.count('[') - valid_json.count(']'))
+                            if valid_json.count('{') > valid_json.count('}'):
+                                valid_json += '}' * (valid_json.count('{') - valid_json.count('}'))
+
+                            data[field] = json.loads(valid_json)
+                            log_json("WARNING", "FIELD_REPAIRED",
+                                    meetingId=meeting_id,
+                                    field=field,
+                                    context=context or "unknown",
+                                    original_length=len(stripped),
+                                    repaired_length=len(valid_json),
+                                    message=f"{field} had extra data, truncated and closed open brackets")
+                            continue
+                    except Exception:
+                        # Repair failed, fall through to error
                         pass
 
                 log_json("ERROR", "FIELD_PARSE_FAILED",

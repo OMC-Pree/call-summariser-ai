@@ -1509,6 +1509,41 @@ def get_case_for_meeting(meeting_id: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
 
+def get_filtered_case_check(meeting_id: str, check_id: str) -> str:
+    """Get a specific case check result by checkId"""
+    if not meeting_id.strip():
+        return json.dumps({"error": "Enter a Meeting ID"}, indent=2)
+    if not check_id:
+        return json.dumps({"error": "Select a Check ID"}, indent=2)
+
+    try:
+        # Call API with checkId filter
+        r = requests.get(CASE_URL, params={"meetingId": meeting_id.strip(), "checkId": check_id}, timeout=15)
+        if r.status_code != 200:
+            return json.dumps({"error": "Failed to fetch filtered case check", "status": r.status_code, "body": r.text[:200]}, indent=2)
+
+        result = r.json()
+
+        # Format for better readability
+        if "result" in result:
+            check_result = result["result"]
+            formatted = {
+                "meeting_id": result.get("meetingId"),
+                "check_id": check_id,
+                "status": check_result.get("status"),
+                "confidence": check_result.get("confidence"),
+                "evidence_quote": check_result.get("evidence_quote", ""),
+                "comment": check_result.get("comment", ""),
+                "evidence_spans": check_result.get("evidence_spans", []),
+                "overall_pass_rate": result.get("overall", {}).get("pass_rate"),
+                "metadata": result.get("metadata", {})
+            }
+            return json.dumps(formatted, indent=2)
+
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
 def get_summary_for_meeting(meeting_id: str) -> str:
     if not meeting_id.strip():
         return json.dumps({"error": "Enter a Meeting ID"}, indent=2)
@@ -1890,6 +1925,35 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
                         outputs=[cc_result_json])
         cc_force_reprocess.change(lambda x: gr.update(visible=x), inputs=[cc_force_reprocess], outputs=[cc_force_warning])
 
+        # Filter by specific check section
+        gr.Markdown("---")
+        gr.Markdown("### 🔎 Query Specific Compliance Check")
+        gr.Markdown("Filter case check results by specific criteria (e.g., vulnerability screening, regulated advice, etc.)")
+
+        with gr.Row():
+            filter_meeting_id = gr.Textbox(label="Meeting ID", placeholder="om-2025-08-28-abc", scale=2)
+            filter_check_id = gr.Dropdown(
+                label="Check ID",
+                choices=[
+                    "vulnerability_identified",
+                    "call_recording_confirmed",
+                    "regulated_advice_given",
+                    "dob_confirmed",
+                    "client_name_confirmed",
+                    "marital_status_confirmed",
+                    "citizenship_confirmed",
+                    "dependents_confirmed"
+                ],
+                value="vulnerability_identified",
+                scale=2,
+                info="Select which compliance check to query"
+            )
+            filter_btn = gr.Button("🔍 Get Check", variant="primary", scale=1)
+
+        filter_result = gr.Code(label="Filtered Check Result", language="json", lines=15)
+
+        filter_btn.click(fn=get_filtered_case_check, inputs=[filter_meeting_id, filter_check_id], outputs=[filter_result])
+
     # ---------- Submit Summary ----------
     with gr.Tab("Submit Summary"):
         gr.Markdown("### 📝 Generate Meeting Summary")
@@ -1930,7 +1994,6 @@ with gr.Blocks(title="Octopus Money — Summariser & Case Checks") as app:
 
         get_summary_btn.click(fn=get_summary_for_meeting, inputs=[mid_in], outputs=[summary_out])
         get_case_btn.click(fn=get_case_for_meeting, inputs=[mid_in], outputs=[case_out])
-
 
     # ---------- Dashboard (API) ----------
     with gr.Tab("Dashboard"):
