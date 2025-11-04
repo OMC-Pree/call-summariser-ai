@@ -264,9 +264,6 @@ DATA_ARCHITECTURE.md
 docs/*
 kb-docs/*
 
-# Evals directory (will be rebuilt fresh after POC)
-evals/
-
 # Prompt Management generated files (ARNs are environment-specific)
 setup/prompt_management/prompt_arns.json
 

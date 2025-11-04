@@ -1,0 +1,12 @@
+# Never commit actual ground truth data or evaluation runs
+golden_data/*.csv
+runs/
+
+# Allow example/template files
+!golden_data/README.md
+!golden_data/example_ground_truth.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
