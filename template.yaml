@@ -123,6 +123,57 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
+  ### DynamoDB Table for Vulnerability Ground Truth Reviews ###
+  VulnerabilityGroundTruthReviewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: vulnerability-ground-truth-reviews
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: review_id
+          AttributeType: S
+        - AttributeName: meeting_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: review_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: MeetingIndex
+          KeySchema:
+            - AttributeName: meeting_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  ### DynamoDB Table for Vulnerability Assessments (Source of Truth) ###
+  VulnerabilityAssessmentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: vulnerability-assessments
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: meeting_id
+          AttributeType: S
+        - AttributeName: assessment_id
+          AttributeType: S
+        - AttributeName: review_status
+          AttributeType: S
+        - AttributeName: assessed_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: meeting_id
+          KeyType: HASH
+        - AttributeName: assessment_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ReviewStatusIndex
+          KeySchema:
+            - AttributeName: review_status
+              KeyType: HASH
+            - AttributeName: assessed_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   ### Step Functions State Machine ###
   SummariserStateMachine:
@@ -508,6 +559,61 @@ Resources:
             TableName: !Ref SummaryJobTable
         - S3ReadPolicy:
             BucketName: !Ref SummaryBucket
+
+  ### Save Vulnerability Ground Truth Review Lambda ###
+  ### GET /reviews/pending - Fetch pending vulnerability assessments ###
+  GetPendingReviewsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: get_pending_reviews.app.lambda_handler
+      Environment:
+        Variables:
+          ASSESSMENTS_TABLE: !Ref VulnerabilityAssessmentsTable
+      Events:
+        GetApi:
+          Type: Api
+          Properties:
+            Path: /reviews/pending
+            Method: get
+        OptionsApi:
+          Type: Api
+          Properties:
+            Path: /reviews/pending
+            Method: options
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref VulnerabilityAssessmentsTable
+
+  ### POST /review - Save coach review and mark assessment as reviewed ###
+  SaveVulnerabilityGroundTruthReviewFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: save_ground_truth_review.app.lambda_handler
+      Environment:
+        Variables:
+          ASSESSMENTS_TABLE: !Ref VulnerabilityAssessmentsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /review
+            Method: post
+        OptionsApi:
+          Type: Api
+          Properties:
+            Path: /review
+            Method: options
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VulnerabilityAssessmentsTable
 
   ### A2I Review Poller (flip IN_REVIEW -> COMPLETED)
   ReviewPollerFunction:

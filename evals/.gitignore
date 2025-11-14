@@ -6,6 +6,9 @@ runs/
 !golden_data/README.md
 !golden_data/example_ground_truth.csv
 
+# Environment variables with API keys
+.env
+
 # Python cache
 __pycache__/
 *.pyc
