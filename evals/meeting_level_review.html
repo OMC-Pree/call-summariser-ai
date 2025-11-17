@@ -2,1294 +2,781 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Meeting-Level Ground Truth Validation</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vulnerability Assessment Review</title>
     <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        * {
             margin: 0;
-            padding: 20px;
-            background: #f5f5f5;
+            padding: 0;
+            box-sizing: border-box;
         }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #2d3748;
+        }
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
-            background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-        h1 {
-            color: #2c3e50;
-            border-bottom: 3px solid #3498db;
-            padding-bottom: 10px;
-        }
-        .header {
-            background: #e8f4f8;
-            padding: 20px;
-            border-radius: 6px;
-            margin: 20px 0;
-        }
-        .header input {
-            width: 300px;
-            padding: 10px;
-            border: 2px solid #3498db;
-            border-radius: 4px;
-            font-size: 1em;
-        }
-        .instructions {
-            background: #fff9e6;
-            padding: 20px;
-            border-radius: 6px;
-            margin: 20px 0;
-            border-left: 4px solid #f39c12;
-        }
-        .stats {
-            display: flex;
-            gap: 20px;
-            margin: 20px 0;
-            flex-wrap: wrap;
-        }
-        .stat-box {
-            background: #f8f9fa;
-            padding: 15px 20px;
-            border-radius: 6px;
-            font-weight: 600;
-        }
-        .stat-box.reviewed { background: #d4edda; color: #155724; }
-        .stat-box.pending { background: #fff3cd; color: #856404; }
 
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.95;
+        }
+
+        /* Coach Email Input */
+        .email-section {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .email-section input {
+            width: 100%;
+            max-width: 400px;
+            padding: 12px;
+            border: 2px solid #667eea;
+            border-radius: 6px;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+
+        /* Dashboard Stats */
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #718096;
+            font-size: 0.95em;
+            font-weight: 500;
+        }
+
+        /* Meeting Cards */
         .meeting-card {
             background: white;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 25px;
-            margin: 20px 0;
-            transition: all 0.3s;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+            transition: transform 0.2s;
         }
+
+        .meeting-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+
         .meeting-header {
+            background: linear-gradient(135deg, #2d3748 0%, #1a202c 100%);
+            color: white;
+            padding: 25px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .meeting-id {
+            font-size: 1.3em;
+            font-weight: 600;
+        }
+
+        .agreement-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+
+        .agreement-full {
+            background: #48bb78;
+            color: white;
+        }
+
+        .agreement-partial {
+            background: #ed8936;
+            color: white;
+        }
+
+        .agreement-none {
+            background: #f56565;
+            color: white;
+        }
+
+        /* Comparison Grid - Side by Side */
+        .comparison-wrapper {
+            overflow-x: auto;
+        }
+
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            min-width: 900px;
+        }
+
+        .system-column {
+            padding: 30px;
+            vertical-align: top;
+            border-right: 2px solid #e2e8f0;
+        }
+
+        .system-column:last-child {
+            border-right: none;
+        }
+
+        .system-column.third-party {
+            background: linear-gradient(135deg, #fff9e6 0%, #ffeaa7 100%);
+        }
+
+        .system-column.ai-model {
+            background: linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%);
+        }
+
+        .system-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
-            border-bottom: 2px solid #e0e0e0;
+            border-bottom: 2px solid rgba(0,0,0,0.1);
         }
-        .meeting-id {
-            font-size: 1.3em;
-            font-weight: 700;
-            color: #2c3e50;
-            font-family: monospace;
-        }
-        .status-badge {
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-weight: 600;
-        }
-        .status-pending { background: #fff3cd; color: #856404; }
 
-        .third-party-section {
-            background: #fff9e6;
-            border: 2px solid #ffc107;
-            padding: 20px;
-            border-radius: 6px;
-            margin: 15px 0;
+        .system-title {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #2d3748;
         }
+
+        .match-icon {
+            font-size: 1.8em;
+        }
+
         .rating-badge {
             display: inline-block;
-            padding: 8px 16px;
-            border-radius: 6px;
+            padding: 10px 20px;
+            border-radius: 25px;
+            color: white;
             font-weight: 700;
-            margin: 5px;
+            font-size: 1.1em;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
-        .rating-critical { background: #f44336; color: white; }
-        .rating-high { background: #ff9800; color: white; }
-        .rating-medium { background: #ffc107; color: #333; }
-        .rating-low { background: #4caf50; color: white; }
 
-        .vuln-tag {
-            display: inline-block;
-            background: #e3f2fd;
-            color: #1976d2;
-            padding: 6px 12px;
-            border-radius: 4px;
-            margin: 4px;
-            font-size: 0.9em;
+        .rating-critical, .rating-5 { background: #d32f2f; }
+        .rating-high, .rating-4 { background: #f57c00; }
+        .rating-medium, .rating-3 { background: #fbc02d; }
+        .rating-low, .rating-2 { background: #388e3c; }
+        .rating-marginal, .rating-1 { background: #689f38; }
+        .rating-none, .rating-0 { background: #7cb342; }
+
+        .summary-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
-        .evidence-list {
-            margin-top: 15px;
+
+        .summary-section h4 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1em;
+            font-weight: 600;
         }
-        .evidence-item {
-            background: #f8f9fa;
+
+        .summary-text {
+            color: #4a5568;
+            line-height: 1.6;
+            font-size: 0.95em;
+        }
+
+        .vulnerability-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .vulnerability-type {
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 0.95em;
+        }
+
+        .evidence-quote {
+            background: #f7fafc;
             padding: 12px;
-            margin: 8px 0;
-            border-left: 3px solid #3498db;
+            border-radius: 6px;
             font-style: italic;
-            color: #555;
+            color: #4a5568;
+            margin: 8px 0;
+            font-size: 0.9em;
+            line-height: 1.5;
         }
 
+        .reasoning {
+            background: #fffaf0;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 8px;
+            font-size: 0.9em;
+            color: #744210;
+            line-height: 1.5;
+        }
+
+        .types-list {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .types-list ul {
+            margin: 10px 0 0 20px;
+            color: #4a5568;
+        }
+
+        .types-list li {
+            margin: 5px 0;
+            line-height: 1.5;
+        }
+
+        /* Action Buttons */
         .actions {
+            padding: 20px 30px;
+            background: #f7fafc;
             display: flex;
             gap: 12px;
-            margin: 20px 0;
+            justify-content: center;
         }
+
         .btn {
             padding: 12px 24px;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             font-weight: 600;
             font-size: 1em;
             cursor: pointer;
             transition: all 0.3s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .btn-agree { background: #4caf50; color: white; }
-        .btn-agree:hover { background: #45a049; }
-        .btn-disagree { background: #f44336; color: white; }
-        .btn-disagree:hover { background: #da190b; }
-        .btn-skip { background: #9e9e9e; color: white; }
-        .btn-skip:hover { background: #757575; }
-        .btn-transcript { background: #3498db; color: white; }
-        .btn-transcript:hover { background: #2980b9; }
-        .btn-show-ai { background: #9c27b0; color: white; }
-        .btn-show-ai:hover { background: #7b1fa2; }
 
+        .btn-agree {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-agree:hover {
+            background: #38a169;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .btn-disagree {
+            background: #f56565;
+            color: white;
+        }
+
+        .btn-disagree:hover {
+            background: #e53e3e;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .btn-skip {
+            background: #a0aec0;
+            color: white;
+        }
+
+        .btn-skip:hover {
+            background: #718096;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .btn-transcript {
+            background: #4299e1;
+            color: white;
+            margin-left: 10px;
+        }
+
+        .btn-transcript:hover {
+            background: #3182ce;
+        }
+
+        .btn-show-models {
+            background: #9f7aea;
+            color: white;
+        }
+
+        .btn-show-models:hover {
+            background: #805ad5;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        /* Correction Form */
         .correction-form {
             display: none;
             background: #f0f7ff;
-            padding: 20px;
-            border-radius: 6px;
-            margin-top: 15px;
-            border: 2px solid #2196f3;
+            padding: 30px;
+            margin: 20px 30px;
+            border-radius: 10px;
+            border: 2px solid #4299e1;
         }
-        .correction-form.active { display: block; }
+
+        .correction-form.active {
+            display: block;
+        }
+
         .form-group {
             margin: 15px 0;
         }
+
         .form-group label {
             display: block;
             font-weight: 600;
             margin-bottom: 5px;
+            color: #2d3748;
         }
+
         .form-group select,
         .form-group input,
         .form-group textarea {
             width: 100%;
             padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
             font-size: 1em;
         }
+
         .form-group textarea {
             min-height: 100px;
             font-family: inherit;
         }
 
-        .review-summary {
-            background: #e8f5e9;
-            padding: 20px;
-            border-radius: 6px;
-            margin-top: 15px;
-        }
-
-        .export-btn {
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            background: #e74c3c;
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 8px;
-            font-weight: 700;
-            font-size: 1.1em;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        }
-        .export-btn:hover {
-            background: #c0392b;
-        }
-
-        /* Multi-Model Consensus Styles */
-        .ai-responses-section {
+        /* Other AI Models Section */
+        .other-models-section {
             display: none;
-            background: #f3e5f5;
-            border: 2px solid #9c27b0;
-            padding: 20px;
-            border-radius: 6px;
-            margin: 15px 0;
+            background: #f7f7ff;
+            padding: 30px;
+            margin: 20px 30px;
+            border-radius: 10px;
+            border: 2px solid #9f7aea;
         }
-        .ai-responses-section.active {
+
+        .other-models-section.active {
             display: block;
         }
-        .ai-model-card {
-            background: white;
-            border-left: 4px solid #9c27b0;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .ai-model-card:first-child {
-            margin-top: 0;
-        }
-        .ai-model-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        .ai-model-name {
-            font-weight: 700;
-            font-size: 1.1em;
-            color: #7b1fa2;
-        }
-        .ai-reasoning {
-            background: #fafafa;
-            padding: 15px;
-            border-left: 3px solid #9c27b0;
-            margin-top: 15px;
-            color: #333;
-            line-height: 1.6;
-            border-radius: 4px;
-        }
-        .ai-reasoning strong {
-            display: block;
-            margin-bottom: 8px;
-            color: #7b1fa2;
-            font-size: 0.95em;
-        }
-        .consensus-section {
-            background: #e3f2fd;
-            border: 2px solid #2196f3;
-            padding: 20px;
-            border-radius: 6px;
-            margin: 15px 0;
-        }
+
         .model-comparison {
-            margin: 15px 0;
-        }
-        .model-row {
-            display: flex;
-            align-items: center;
-            padding: 12px;
-            margin: 8px 0;
             background: white;
-            border-radius: 4px;
-            border-left: 4px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #9f7aea;
         }
-        .model-row.third-party-row {
-            border-left-color: #ffc107;
-            background: #fffbf0;
-        }
-        .model-row.agrees {
-            border-left-color: #4caf50;
-        }
-        .model-row.disagrees {
-            border-left-color: #ff9800;
-        }
+
         .model-name {
-            font-weight: 600;
-            min-width: 180px;
-        }
-        .consensus-icon {
-            margin-left: auto;
             font-weight: 700;
-            padding: 4px 12px;
-            border-radius: 4px;
-            font-size: 0.85em;
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1.1em;
         }
-        .agrees .consensus-icon {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        .disagrees .consensus-icon {
-            background: #fff3e0;
-            color: #e65100;
-        }
-        .consensus-badge {
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            font-weight: 700;
-        }
-        .consensus-high {
-            background: #4caf50;
-            color: white;
-        }
-        .consensus-low {
-            background: #ff9800;
-            color: white;
-        }
-        .consensus-note {
-            background: #fff3e0;
-            border-left: 4px solid #ff9800;
-            padding: 12px;
-            margin-top: 15px;
-            border-radius: 4px;
-            font-size: 0.95em;
-        }
-        .consensus-note-success {
-            background: #e8f5e9;
-            border-left-color: #4caf50;
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 1.8em;
+            }
+
+            .dashboard {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .stat-value {
+                font-size: 2em;
+            }
+
+            .comparison-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .system-column {
+                border-right: none;
+                border-bottom: 2px solid #e2e8f0;
+            }
+
+            .system-column:last-child {
+                border-bottom: none;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔍 Meeting-Level Ground Truth Validation</h1>
+        <header>
+            <h1>Vulnerability Assessment Review</h1>
+            <p class="subtitle">Coach Review Interface - Third-Party vs AI Model Comparison</p>
+        </header>
 
-        <div class="header">
+        <!-- Coach Email Input -->
+        <div class="email-section">
             <label><strong>Coach Email:</strong></label>
             <input type="email" id="coachEmail" placeholder="your.email@company.com">
-            <p style="margin-top: 10px; color: #666;">
-                Enter your email to track your reviews and enable export.
+            <p style="margin-top: 10px; color: #666; font-size: 0.9em;">
+                Enter your email to track your reviews and save progress
             </p>
         </div>
 
-        <div class="instructions">
-            <h3>📋 Instructions</h3>
-            <ol>
-                <li>Enter your email above</li>
-                <li>Review each meeting's <strong>third-party labels</strong> (from Aveni)</li>
-                <li>Click <strong>"View Transcript"</strong> to read the full conversation</li>
-                <li>For each meeting, choose:
-                    <ul>
-                        <li><strong>✓ Agree</strong> - The overall rating and vulnerability types are correct</li>
-                        <li><strong>✗ Disagree</strong> - Provide the correct assessment</li>
-                        <li><strong>⏭ Skip</strong> - Review later</li>
-                    </ul>
-                </li>
-                <li>Export your reviews when done</li>
-            </ol>
-            <p><strong>Goal:</strong> Validate third-party assessments to create trusted ground truth for model evaluation</p>
+        <!-- Performance Dashboard -->
+        <div class="dashboard" id="dashboard">
+            <div class="stat-card">
+                <div class="stat-value" id="totalCount">0</div>
+                <div class="stat-label">Total Meetings</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="reviewedCount">0</div>
+                <div class="stat-label">Reviewed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="pendingCount">0</div>
+                <div class="stat-label">Pending</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="agreementCount">0</div>
+                <div class="stat-label">Agreements</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="disagreementCount">0</div>
+                <div class="stat-label">Disagreements</div>
+            </div>
         </div>
 
-        <div class="stats">
-            <div class="stat-box">Total Meetings: <span id="totalMeetings">0</span></div>
-            <div class="stat-box reviewed">Reviewed: <span id="reviewedCount">0</span></div>
-            <div class="stat-box pending">Pending: <span id="pendingCount">0</span></div>
+        <!-- Meeting Comparisons -->
+        <div id="meetingsContainer">
+            <div style="text-align: center; padding: 40px; color: white; font-size: 1.2em;">
+                Loading assessments...
+            </div>
         </div>
 
-        <div id="meetingsContainer"></div>
     </div>
 
-    <button class="export-btn" onclick="exportReviews()">📥 Export Reviews</button>
-
     <script>
-        // ===========================================================
-        // Configuration
-        // ===========================================================
+        // API Configuration
         const API_ENDPOINT = 'https://zrjzpoao4d.execute-api.eu-west-2.amazonaws.com/Prod';
 
-        // Feature Flags
-        // To enable AI model comparisons, set SHOW_AI_MODELS to true below
-        const FEATURE_FLAGS = {
-            SHOW_AI_MODELS: false  // Set to true to show "🤖 Show AI Model Responses" button
-        };
-
-        // Meeting data loaded dynamically from API
-        let MEETING_DATA = [];  // Will be populated by fetchPendingReviews()
-
-        // DEPRECATED: Hard-coded data moved to DynamoDB (vulnerability-assessments table)
-        // Migration script: evals/migrate_assessments_to_dynamodb.py
-        const LEGACY_MEETING_DATA = [
-  {
-    "meeting_id": "91085608879",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition"
-    ],
-    "evidence_quotes": [
-      "it's just, um, yeah, I, I'm very anxious and because I'm looking into buying my first property and stuff, that has also, it's a constant that is in the back of my head. Um, it does cause me anxiety to think that I won't be able to save the same set amount of money. So I do, yeah, I think all of it will be beneficial for me just to get the reassurance that I will be okay not seeing the same amount of numbers that I see every month. Um..."
-    ]
-  },
-  {
-    "meeting_id": "91419573632",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "that's kind, it's, uh, basically it's my, my, my auntie passed at the start of the year there..."
-    ]
-  },
-  {
-    "meeting_id": "91836968458",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Health: Suicide",
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "so I suffer with fibromyalgia, um...",
-      "you can't get outta bed. That's my pain 24 7. Like...",
-      "interestingly, my mom has it as well, but there's...",
-      "I have to go to the hospital, I, I, I, I put on a sort of mode and I say to myself, right, okay, something's gonna happen to me, or an investigation or whatever. Let's take a scientific interest in it. And it helps me cope with it.",
-      "yeah, I think because I have got my health issues..."
-    ]
-  },
-  {
-    "meeting_id": "92125626617",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Learning Difficulties",
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "Um, yeah. And know that I'm sort of set up for the future. Um, so my, I think it's become more of a concern recently. Um, so my best friend has been through absolute hell and back basically the past sort of two, three years. Um, she lost her mom to cancer earlier this year and it kind of really hit home that yes, we young, but these things can kind of still hit and still happen. So...",
-      "please say, um, and my brother's young daughter, she's got autism actually at the moment."
-    ]
-  },
-  {
-    "meeting_id": "92241168706",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Learning Difficulties"
-    ],
-    "evidence_quotes": [
-      "no, I'm dyslexic but I mean it doesn't impact me the way I work so I can't imagine it impact this."
-    ]
-  },
-  {
-    "meeting_id": "92420054329",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Income Shock",
-      "Resilience: Low Emotional Resilience"
-    ],
-    "evidence_quotes": [
-      "I know you, you track along and you just go on with things and then you think about it. Um, but yeah, so that's where we're currently, that should change. My husband had a difficult employment situation.",
-      "we see my, uh, my husband's convinced he's gonna end up in court with this employment thing, so Well..."
-    ]
-  },
-  {
-    "meeting_id": "92488889840",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Learning Difficulties",
-      "Health: Temporary Illness Or Hospitalisation Or Accident",
-      "Resilience: Over-indebtedness"
-    ],
-    "evidence_quotes": [
-      "Yeah, not too bad. Yeah, I've been a bit ill this week actually, so I'm just sort of just crawling back today really. So yeah, excuse my slightly cranky voice, but, uh, hopefully I'll get through. Okay. Uh, it might just be a bit of coughing as well. Sorry, <laugh>. Um, but, uh, yeah, what sort of department do you work in?",
-      "very young. Uh, so they're five years old. Um, and one of them, Matt, is, um, uh, he's has special needs. So he, uh, and he gets, uh, is part of a, an EHPC and send programme. He's got, uh, being diagnosed with autism, um, as, uh, uh, and got a verbal delay, but he gets to support that he needs here.",
-      "because I've got a, a massive mortgage to pay. I'm in debt, I've got big credit card bills except yada..."
-    ]
-  },
-  {
-    "meeting_id": "92518977414",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Capability: Low Confidence Financial Matters"
-    ],
-    "evidence_quotes": [
-      "yeah, it's more, it's more not having, it's, it's more being thinking I don't have to think about money and or, and that if I got, um, um, I basically other element is then also just thinking about if I got ill and needed, you know, support and things like that."
-    ]
-  },
-  {
-    "meeting_id": "92557317718",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Low Mental Capacity"
-    ],
-    "evidence_quotes": [
-      "there's suddenly the extra stress of sort of not, you know, his loved ones not being able to make decisions about money or his healthcare."
-    ]
-  },
-  {
-    "meeting_id": "92573562313",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Health: Mental Health Condition",
-      "Life Events: Caring Responsibilities",
-      "Life Events: Domestic Violence",
-      "Resilience: Low Emotional Resilience",
-      "Resilience: Low Or Erratic Income",
-      "Resilience: Over-indebtedness"
-    ],
-    "evidence_quotes": [
-      "This is, I'm gonna tell you a bit about my background because this is relevant to my fears with my son. So I'm a lone parent...",
-      "so anyway, I ended up, he was very, very bad person and I ended up going from there to living with an older man who was an abusive situation.",
-      "Literally, I had no one it, I had, you know, it, I you don't make good decisions when you have postnatal depression. <laugh>...",
-      "I know the same things can change. I've lived with two abusive men.",
-      "I am very paranoid. He's got to be okay."
-    ]
-  },
-  {
-    "meeting_id": "92806419428",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "my dad passed away around the time that I started going on this journey with my previous company...",
-      "it was, it was a lot more around the, uh, the early time when my father passed. It was like more than 10, about 10 years ago. But it was still a lot of, because my brother's son is autistic and his, so his partner can't work. So every once in a while if the..."
-    ]
-  },
-  {
-    "meeting_id": "93062108033",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "Um, you'll have to apologise for my croaky voice unfortunately. I've got a bit of a cold at the moment, so..."
-    ]
-  },
-  {
-    "meeting_id": "93598502685",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Low Mental Capacity",
-      "Health: Chronic Illness",
-      "Life Events: Caring Responsibilities"
-    ],
-    "evidence_quotes": [
-      "Well, so, because, um, um, I've been gifted some money as well from, from my mom. So now, um, I am at, I'm just gonna my banking up because, uh, I have perimenopausal brain. I cannot remember anything.",
-      "and then based on the questions that you answer in terms of, you know, your dependence and all that sort of thing...",
-      "Um, I have Crohn's disease..."
-    ]
-  },
-  {
-    "meeting_id": "93642562064",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition",
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "uh, it's always something not particularly pleasant that that has led to, so I'm sorry to hear about that. Um, okay. Okay. So did, can, do you mind me asking what, what it was about you, you, you alluded to something that had happened with assets that of knew assets...",
-      "Yeah. And then, um, my, um, my wife's father who's passed away his, his estate's going through probate at the moment..."
-    ]
-  },
-  {
-    "meeting_id": "93699254645",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness"
-    ],
-    "evidence_quotes": [
-      "Uh, so I have cystic fibrosis, which is sort of a...",
-      "cause with cystic fibrosis, I don't, I can't have, uh, consumed fat by myself. I need to have tablets to be able to do it."
-    ]
-  },
-  {
-    "meeting_id": "93843142427",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Capability: Low Confidence Financial Matters"
-    ],
-    "evidence_quotes": [
-      "so yeah, basically I don't have a grip on my finances. That's what I'm getting at and I wanna know Yeah."
-    ]
-  },
-  {
-    "meeting_id": "94280738151",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition"
-    ],
-    "evidence_quotes": [
-      "um, which I should probably have therapy as well as <laugh> sorting out my finance answers. So yeah. I thought I would take advantage of the, of the session and, and give it a go and see if I can get to grips with things."
-    ]
-  },
-  {
-    "meeting_id": "94436993081",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness"
-    ],
-    "evidence_quotes": [
-      "Yeah. I'm, I'm fine. I've, uh, I've been type two diabetic for 15 plus years. Um, yeah. And other than just getting older, that's, that's it."
-    ]
-  },
-  {
-    "meeting_id": "94472332281",
-    "overall_rating": "High/4",
-    "vulnerability_types": [
-      "Capability: Learning Difficulties"
-    ],
-    "evidence_quotes": [
-      "they, they are, they, they, they do a lot for me in terms of accommodating my neurodivergence and making sure that I've got sort of support around me. So."
-    ]
-  },
-  {
-    "meeting_id": "94826040836",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "Wonderful. I've, for some reason, I've got another cold. I literally just came over one, like I just got over one, like about two weeks ago, and I'm back in..."
-    ]
-  },
-  {
-    "meeting_id": "94931872724",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Health: Temporary Illness Or Hospitalisation Or Accident",
-      "Resilience: Low Or Erratic Income"
-    ],
-    "evidence_quotes": [
-      "Uh, well the, the wife's got, um, pulmonary fibrosis, so, um, she's still able to move around and stuff at the moment, but she does struggle. So she needs a little bit of, um, assistance from, from, from me now. Um, but that's gonna increase over the next year or so. Um, so he, hence the reason for looking to, um, retire really. And that's really...",
-      "you've got no job. Yeah...",
-      "Yeah, that was in, in interesting one. Yeah. We had travel insurance. We let 'em, let 'em know that she was in hospital for five days and they come back and said, well look. Yeah. Um, uh, you're still insured for what you've uh, yeah, it's, it's with a specialist insurance com company. And they said, yeah, no, you're still insured for the pulmonary fibrosis and stuff like that. And uh, they said, look, if you decide to, uh, cancel it, the, the, um, the holiday, holiday, 'cause you don't feel as though you're up for it. That's, that's your decision and you're not insured for that. So if we cancel it..."
-    ]
-  },
-  {
-    "meeting_id": "95030471641",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "yeah, like I, I really feel groggy, not stuffy and said I can't operate but just like congested so I can still move and function normally it's just that the congestion's just a bit of an irritation and my throat's a bit sore.."
-    ]
-  },
-  {
-    "meeting_id": "95494255796",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Capability: Learning Difficulties",
-      "Capability: Young Or Old Age",
-      "Health: Mental Health Condition",
-      "Health: Physical Disablity",
-      "Life Events: Domestic Violence",
-      "Life Events: Income Shock"
-    ],
-    "evidence_quotes": [
-      "So I'm 41 now, and I have the fear that...",
-      "Um, he's autistic. He needs a lot of help. Um, academically when he finishes, he's going into year 10 in September when he finishes. I don't think he's coming out with any qualifications. Um, I'm looking at, so I dabble in quite a few things. Um, so I've dabbled in as a hobby photography and I've said to him...",
-      "Um, I have this fear that something's gonna come up along the way. So we haven't got gas at the moment, so we're paying engineers to fix it.",
-      "it feels like carpal tunnel in my hand. So I've got paralysis up to about just before my el uh, elbow and then just before my knees.",
-      "And a neurologist told me that I will be lucky if I outlive full body paralysis."
-    ]
-  },
-  {
-    "meeting_id": "95732813908",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Health: Mental Health Condition",
-      "Health: Suicide",
-      "Health: Temporary Illness Or Hospitalisation Or Accident",
-      "Life Events: Divorce Or Separation",
-      "Life Events: Income Shock",
-      "Resilience: Lack Of Support Network",
-      "Resilience: Low Emotional Resilience",
-      "Resilience: Over-indebtedness"
-    ],
-    "evidence_quotes": [
-      "Um, I have been burying my head in the sand with money, and then I've been on long-term sick leave with work, so that's not really helped. And then I kept getting a lot of emails saying, hello, this is your octopus money Coach Santander has recommended you. So I thought, okay...",
-      "I was with a partner who's suicidal. Um, we've eventually gotten married...",
-      "things have been great, but he's got ms. So when his health dips, he's on sick leave and I'm working and I'm trying to, I'm trying to keep everything afloat.",
-      "which has caused significant brain fog, real difficulty with numbers and not being able to do my job <laugh>.",
-      "So I've been in a real hole. And then I've had to take the decision to take some time away from work because one, I knew my, my wages would be impacted, but..."
-    ]
-  },
-  {
-    "meeting_id": "95998854045",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Health: Mental Health Condition"
-    ],
-    "evidence_quotes": [
-      "Um, but I tried to go back to the doctors to try to go back on medication, and they told me I've gotta start all over again, and it could take two and a half years.",
-      "that's when I went to the doctor, they said, they've got no record of my diagnosis. They can't find my diagnosis. And I said, but you've been, you was prescribe prescribing me Ritalin for five years, so it's gotta be on there. Do you know what I mean? But they...",
-      "Yeah. Yeah. You gotta think about your mental health and what..."
-    ]
-  },
-  {
-    "meeting_id": "96643996214",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Health: Suicide",
-      "Life Events: Bereavement",
-      "Resilience: Low Or Erratic Income"
-    ],
-    "evidence_quotes": [
-      "probably just after Covid and my mom died in January.",
-      "I, I asked a chat GPT about that and it thought I was having suicidal ideations. I think it was quite funny. So I explained to to it that I was autistic and that my mum had died at a certain age and therefore I was trying to understand...",
-      "I, I asked a chat GPT about that and it thought I was having suicidal ideations. I think it was quite funny. So I explained to to it that I was autistic and that my mum had died at a certain age and therefore I was trying to understand...",
-      "most definitely. Um, and if I don't buy the flat then, or you know, if it's sensible not to perhaps just keep, put some money away investment and then just diversify everything a little bit. That's a good idea. I'm gonna sign on as well, uh, on, uh, on Monday. I can do you get a job seeker allowance when you stop work for 26 weeks? It's not being started."
-    ]
-  },
-  {
-    "meeting_id": "96644906055",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition"
-    ],
-    "evidence_quotes": [
-      "Like it's causing me a bit of a panic now. Like, not now. Like it, yeah..."
-    ]
-  },
-  {
-    "meeting_id": "96682332671",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident",
-      "Life Events: Income Shock"
-    ],
-    "evidence_quotes": [
-      "Uh, feeling a bit stuffy as I know there's something going around like two weeks ago I was ill.",
-      "Okay, so the reason why I'm questioning that because, um, you mentioned earlier in regards to having that security current, not having anxiety if you lose your job or whatever the case may be, if you have insurance around income protection or redundancy insurance..."
-    ]
-  },
-  {
-    "meeting_id": "97054228206",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Income Shock",
-      "Resilience: Low Emotional Resilience",
-      "Resilience: Low Or Erratic Income",
-      "Resilience: Over-indebtedness"
-    ],
-    "evidence_quotes": [
-      "that I could get a free session. So I thought, oh, well, why not? Because like, I, I'm not, I wouldn't say I'm struggling financially, but since I left school, I've, I've always seemed to like be in a bit of a rut, you know, with money.",
-      "it's holding me back. Like I feel like I'm just stuck...",
-      "And, and I rang them up and it, I told a few months ago, I rang them up and just said, look, I'm I, I told them I'd lost my job, to be honest.",
-      "I mean, um, they just, it would be a call or online just discuss what your situation is and see if they can help you and come up with a pathway specifically for reducing your debt and potentially having um, ideas for you to get outta the situation that you are in."
-    ]
-  },
-  {
-    "meeting_id": "97277706746",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "it's, I must, I must admit I've been, well 'cause I, I lost both parents, so for last couple of three years."
-    ]
-  },
-  {
-    "meeting_id": "97523891313",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Divorce Or Separation",
-      "Resilience: Low Emotional Resilience"
-    ],
-    "evidence_quotes": [
-      "And how quickly can we do it? Um, the divorce has already kind of started and we've already put all of that paperwork in, so that won't be confirmed until March, I think, next year. And then once we know what I can get out of the house, we can then put the financial order in place to then make sure that both of us know exactly what's happening and when it's happening. Um, so that, yeah. So that we can both move forward with clarity. 'cause at the minute it is just holding, the thing that's holding it up is knowing what I can get out of the house and...",
-      "and I live a whole year of misery because of it <laugh>."
-    ]
-  },
-  {
-    "meeting_id": "97657733212",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Life Events: Domestic Violence"
-    ],
-    "evidence_quotes": [
-      "Uh, yeah, I've got Crohn's disease, so, um...",
-      "uh, that situation will not arise again because I'm <laugh> I was very close to being murdered. I think so, uh, yeah. That won't, that won't be happening again. Um..."
-    ]
-  },
-  {
-    "meeting_id": "97799785530",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition",
-      "Life Events: Income Shock",
-      "Resilience: Low Emotional Resilience"
-    ],
-    "evidence_quotes": [
-      "this, this call is actually quite pertinent 'cause my, my situation has recently changed and that I've just found out that my role is up for redundancy.",
-      "I think, to be honest, I guess a couple of things. So I've got a DHD, which I think probably affects my...",
-      "and I get quite stressed if I feel that there's like a lot of things going on in a lot of places. So for me it's helpful to have as much kind of clearly kind of consolidated as possible in a way that sort of...",
-      "I think that probably doesn't work for me terribly well because with my a with my A DHD...",
-      "I will often feel kind of anxious and guilty if I have a month where like, you know, I go to two things that might cost like 50 or 60 quid each."
-    ]
-  },
-  {
-    "meeting_id": "97804982507",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Income Shock"
-    ],
-    "evidence_quotes": [
-      "Um, and I think it's probably important to mention at one point at this point, um, something in relation, an announcement that we had last week. So I'm currently now as of last week at risk of redundancy."
-    ]
-  },
-  {
-    "meeting_id": "97864973491",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "to be honest with you. I had a little health scare and then I had to go into hospital for an operation, so I thought I quickly need to get a well done. So I quickly went online and just done it with her a random, so it's not, to be honest with you, it needs to do Im properly, it's basically the condensed version of if I die, my wife gets everything..."
-    ]
-  },
-  {
-    "meeting_id": "98032996090",
-    "overall_rating": "Critical/5",
-    "vulnerability_types": [
-      "Life Events: Divorce Or Separation",
-      "Life Events: Domestic Violence"
-    ],
-    "evidence_quotes": [
-      "Um, and that was to take my son away...",
-      "yeah. We, we were, you know, she, um, he was abusive. Um, and she finally realised that, and they've gone their separate ways. Fortunately, we we're, we are fine as long as we stay on the subject in certain confines, but we've ne there's never been any level of civil war where...",
-      "I was severely damaged by my divorce in..."
-    ]
-  },
-  {
-    "meeting_id": "98635420721",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Mental Health Condition"
-    ],
-    "evidence_quotes": [
-      "So I think it, it reduced the anxiety that I've got <laugh>.."
-    ]
-  },
-  {
-    "meeting_id": "98929816982",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Capability: Low Confidence Financial Matters"
-    ],
-    "evidence_quotes": [
-      "uh, my current financial situation isn't, it's not like it's bad, it's just I'm not doing what I should be doing with the money that I currently have. I'm not really using it very well. It's kind of wasting it, but it's just sitting there not, um, working for me, I suppose."
-    ]
-  },
-  {
-    "meeting_id": "98977867000",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Life Events: Homeless"
-    ],
-    "evidence_quotes": [
-      "Um, this getting kicked out my room, but I will, I'll tune back in, in a moment."
-    ]
-  },
-  {
-    "meeting_id": "99042646647",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Life Events: Bereavement"
-    ],
-    "evidence_quotes": [
-      "Well, um, my mother passed away earlier this year, um, and there's an inheritance coming there..."
-    ]
-  },
-  {
-    "meeting_id": "99164467325",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Addiction"
-    ],
-    "evidence_quotes": [
-      "um, well, I guess I have a bit of a spending issue. Like, I have like a shopping addiction basically <laugh>."
-    ]
-  },
-  {
-    "meeting_id": "99262643839",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Resilience: Low Emotional Resilience"
-    ],
-    "evidence_quotes": [
-      "Um, I think so. I've been having a look into it for my sister 'cause she's just been diagnosed with something and I think some of them do.",
-      "cause I, I, I've got some lung conditions...",
-      "Well, no, I was having a bit of, um, I'm menopausal and I was, I had a bit of a, a cancer scare, so I was doing that all week. So not really <laugh>..",
-      "yeah. They don't, they don't impact my lifestyle. But, um, so I have COPD and emphysema and, you know, they're like, they're the third biggest killer. So I'm, I'm aware it may not, you know, it may, I may not get ill with it, but I'm also aware that we may well do...",
-      "so I, I just, I know it sounds, because all my friends are like, well, I not do, I'm just like, it's just emotionally, I don't want to have to deal with it, but fine and fun."
-    ]
-  },
-  {
-    "meeting_id": "99366257791",
-    "overall_rating": "Low/2",
-    "vulnerability_types": [
-      "Health: Temporary Illness Or Hospitalisation Or Accident"
-    ],
-    "evidence_quotes": [
-      "Not too bad. Well, I am getting over a cold. I literally had a cold two weeks ago and some reason I've...",
-      "Yeah. Fingers crossed for you. Honestly, I dunno. First look, got my nephew and now I've got it from, I dunno, where I literally came a cruise ship, a little mini cruise and now I'm sick again.",
-      "well, hopely, hopefully you can, you can continue to work and cope. 'cause I have, although I feel snuffly and I've got a sore throat, I don't feel like it's a head cold. So I can still function and move and do..",
-      "Oh good. I just had jet lag and I'm just trying to get my, um, motivation back for work. But, you know, <laugh>..."
-    ]
-  },
-  {
-    "meeting_id": "99435849311",
-    "overall_rating": "Medium/3",
-    "vulnerability_types": [
-      "Health: Chronic Illness",
-      "Resilience: Low Emotional Resilience"
-    ],
-    "evidence_quotes": [
-      "Yeah, possibly. I'm really sorry. So basically the last couple of weeks, this is probably too much information, but just, this is why I'm not on the ball. My partner's dad, we've just found out he's got cancer. So we've been absolutely just up to the eyeballs with it. And, um, yeah, I'm really sorry if I haven't filled out the questionnaire, but it's been a lot, which is also another reason why I'm wanting to just get my final..",
-      "hearing all about. Yeah. Just the, the horror stories. So I'm a very stressed individual anyway."
-    ]
-  }
-];
-
-// Total meetings: 44
-
+        let assessments = [];
         let reviews = {};
 
+        // Initialize page
         async function init() {
-            // Show loading state
-            const container = document.getElementById('meetingsContainer');
-            container.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">Loading pending reviews...</div>';
-
             try {
-                await fetchPendingReviews();
-                updateStats();
+                await fetchAssessments();
+                calculateStats();
                 renderMeetings();
             } catch (error) {
-                console.error('Failed to load pending reviews:', error);
-                container.innerHTML = '<div style="text-align: center; padding: 40px; color: #dc3545;">Error loading reviews. Please refresh the page.</div>';
+                console.error('Failed to load assessments:', error);
+                document.getElementById('meetingsContainer').innerHTML =
+                    '<div style="text-align: center; padding: 40px; color: white;">Error loading assessments. Please refresh the page.</div>';
             }
         }
 
-        async function fetchPendingReviews() {
-            try {
-                const response = await fetch(`${API_ENDPOINT}/reviews/pending`, {
-                    method: 'GET',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API returned ${response.status}`);
-                }
-
-                const data = await response.json();
-                MEETING_DATA = data.assessments || [];
-                console.log(`✓ Loaded ${MEETING_DATA.length} pending reviews from API`);
-                console.log(`✓ First meeting has ai_responses:`, MEETING_DATA[0] && 'ai_responses' in MEETING_DATA[0]);
-                if (MEETING_DATA[0] && MEETING_DATA[0].ai_responses) {
-                    console.log(`✓ AI models available:`, Object.keys(MEETING_DATA[0].ai_responses));
-                }
-                return MEETING_DATA;
-            } catch (error) {
-                console.error('Error fetching pending reviews:', error);
-                // Fallback to legacy hard-coded data
-                console.warn('Falling back to legacy hard-coded data');
-                MEETING_DATA = LEGACY_MEETING_DATA;
-                return MEETING_DATA;
+        // Fetch assessments from API
+        async function fetchAssessments() {
+            const response = await fetch(`${API_ENDPOINT}/reviews/pending`);
+            if (!response.ok) {
+                throw new Error(`API returned ${response.status}`);
             }
+            const data = await response.json();
+            assessments = data.assessments || [];
+            console.log(`Loaded ${assessments.length} assessments`);
         }
 
-        async function saveReviewToDynamoDB(review) {
-            try {
-                const response = await fetch(`${API_ENDPOINT}/review`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(review)
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    console.error('Failed to save review to DynamoDB:', errorData);
-                    alert('Warning: Review saved locally but failed to save to database. Please export your reviews as backup.');
-                    return false;
-                }
-
-                const result = await response.json();
-                console.log('Review saved to DynamoDB:', result);
-                return true;
-            } catch (error) {
-                console.error('Error saving review to DynamoDB:', error);
-                alert('Warning: Review saved locally but failed to save to database. Please export your reviews as backup.');
-                return false;
-            }
-        }
-
-        function updateStats() {
+        // Calculate statistics
+        function calculateStats() {
+            const total = assessments.length;
             const reviewed = Object.keys(reviews).length;
-            const total = MEETING_DATA.length;
             const pending = total - reviewed;
 
-            document.getElementById('totalMeetings').textContent = total;
+            let agreements = 0;
+            Object.values(reviews).forEach(review => {
+                if (review.action === 'agree') agreements++;
+            });
+            const disagreements = reviewed - agreements;
+
+            document.getElementById('totalCount').textContent = total;
             document.getElementById('reviewedCount').textContent = reviewed;
             document.getElementById('pendingCount').textContent = pending;
+            document.getElementById('agreementCount').textContent = agreements;
+            document.getElementById('disagreementCount').textContent = disagreements;
         }
 
-        function getRatingClass(rating) {
-            if (rating.includes('Critical')) return 'critical';
-            if (rating.includes('High')) return 'high';
-            if (rating.includes('Medium')) return 'medium';
-            return 'low';
+        // Get rating background color
+        function getRatingColor(rating) {
+            if (!rating) return '#9e9e9e';
+            if (rating.includes('Critical') || rating.includes('/5')) return '#d32f2f';
+            if (rating.includes('High') || rating.includes('/4')) return '#f57c00';
+            if (rating.includes('Medium') || rating.includes('/3')) return '#fbc02d';
+            if (rating.includes('Low') || rating.includes('/2')) return '#388e3c';
+            if (rating.includes('Marginal') || rating.includes('/1')) return '#689f38';
+            if (rating.includes('None') || rating.includes('/0')) return '#7cb342';
+            return '#9e9e9e';
         }
 
-        function renderAIResponsesSection(meeting) {
-            // Check feature flag first
-            if (!FEATURE_FLAGS.SHOW_AI_MODELS) return '';
+        // Check agreement between third-party and AI
+        function checkAgreement(assessment) {
+            const aiResponse = assessment.ai_responses?.['claude-3-7-sonnet'];
+            if (!aiResponse) return { icon: '❓', badge: 'agreement-partial', text: 'No AI Assessment' };
 
-            // Check if we have AI model responses
-            const aiResponses = meeting.ai_responses;
-            if (!aiResponses || Object.keys(aiResponses).length === 0) return '';
+            const ratingMatch = aiResponse.rating === assessment.overall_rating;
 
-            const modelNames = {
-                'claude-3-sonnet': 'Claude 3 Sonnet',
-                'claude-3.5-sonnet': 'Claude 3.5 Sonnet',
-                'gpt-4': 'GPT-4',
-                'gpt-4o': 'GPT-4o',
-                'gemini-pro': 'Gemini Pro',
-                'gemini-1.5-flash': 'Gemini 1.5 Flash',
-                'gemini-2.5-flash': 'Gemini 2.5 Flash'
-            };
+            // Check vulnerability types overlap
+            const thirdPartyTypes = new Set(assessment.vulnerability_types || []);
+            const aiTypes = new Set(aiResponse.vulnerability_types || []);
+            const intersection = new Set([...thirdPartyTypes].filter(x => aiTypes.has(x)));
 
-            const modelCards = Object.entries(aiResponses).map(([modelId, data]) => {
-                // Format reasoning text with better line breaks
-                let formattedReasoning = data.reasoning || '';
-                if (formattedReasoning) {
-                    // Add line breaks after sentences for better readability
-                    formattedReasoning = formattedReasoning
-                        .replace(/\. ([A-Z])/g, '.<br><br>$1')  // Break after sentences
-                        .replace(/\n/g, '<br>');  // Preserve existing line breaks
-                }
-
-                return `
-                    <div class="ai-model-card">
-                        <div class="ai-model-header">
-                            <span class="ai-model-name">${modelNames[modelId] || modelId}</span>
-                            <span class="rating-badge rating-${getRatingClass(data.rating)}">${data.rating}</span>
-                        </div>
-                        <div style="margin-top: 15px;">
-                            <strong style="display: block; margin-bottom: 8px; color: #555;">Vulnerability Types:</strong>
-                            ${(data.vulnerability_types || []).map(type => `<span class="vuln-tag">${type}</span>`).join(' ')}
-                        </div>
-                        ${formattedReasoning ? `
-                            <div class="ai-reasoning">
-                                <strong>Reasoning & Evidence:</strong>
-                                <div style="margin-top: 8px;">${formattedReasoning}</div>
-                            </div>
-                        ` : ''}
-                        ${data.evidence_quotes && data.evidence_quotes.length > 0 ? `
-                            <div class="evidence-list" style="margin-top: 15px;">
-                                <strong>Evidence Quotes:</strong>
-                                ${data.evidence_quotes.map(quote =>
-                                    `<div class="evidence-item">${quote}</div>`
-                                ).join('')}
-                            </div>
-                        ` : ''}
-                    </div>
-                `;
-            }).join('');
-
-            return `
-                <div class="ai-responses-section" id="ai-responses-${meeting.meeting_id}">
-                    <h3 style="margin-top: 0;">🤖 AI Model Assessments</h3>
-                    <p style="margin-bottom: 15px; color: #666;">
-                        See how different AI models assessed this meeting and their reasoning:
-                    </p>
-                    ${modelCards}
-                </div>
-            `;
-        }
-
-        function toggleAIResponses(meetingId) {
-            const section = document.getElementById(`ai-responses-${meetingId}`);
-            const button = document.getElementById(`btn-ai-${meetingId}`);
-
-            if (section.classList.contains('active')) {
-                section.classList.remove('active');
-                button.textContent = '🤖 Show AI Model Responses';
+            if (ratingMatch && intersection.size === thirdPartyTypes.size && intersection.size === aiTypes.size) {
+                return { icon: '✅', badge: 'agreement-full', text: 'Full Agreement' };
+            } else if (ratingMatch || intersection.size > 0) {
+                return { icon: '🟡', badge: 'agreement-partial', text: 'Partial Agreement' };
             } else {
-                section.classList.add('active');
-                button.textContent = '🤖 Hide AI Model Responses';
+                return { icon: '❌', badge: 'agreement-none', text: 'Disagreement' };
             }
         }
 
-        function renderConsensusSection(meeting) {
-            // Check feature flag first
-            if (!FEATURE_FLAGS.SHOW_AI_MODELS) return '';
-
-            const consensus = meeting.model_consensus;
-            if (!consensus || !consensus.models) return '';
-
-            const thirdPartyRating = meeting.overall_rating;
-            const models = consensus.models;
-
-            const modelNames = {
-                'claude-3.5-sonnet': 'Claude 3.5',
-                'gpt-4': 'GPT-4',
-                'gemini-pro': 'Gemini Pro'
-            };
-
-            const modelRows = Object.entries(models).map(([modelId, data]) => {
-                const agrees = data.agrees_with_third_party;
-                const icon = agrees ? '✓' : '⚠';
-                const agreeClass = agrees ? 'agrees' : 'disagrees';
-                const agreeText = agrees ? 'AGREES' : 'DISAGREES';
-
-                return `
-                    <div class="model-row ${agreeClass}">
-                        <span class="model-name">${modelNames[modelId] || modelId}:</span>
-                        <span class="rating-badge rating-${getRatingClass(data.rating)}">${data.rating}</span>
-                        <span class="consensus-icon">${icon} ${agreeText}</span>
-                    </div>
-                `;
-            }).join('');
-
-            const consensusStrength = consensus.consensus_strength || 'unknown';
-            const agreementCount = consensus.agreement_count || 0;
-            const totalModels = consensus.total_models || 3;
-
-            const strengthBadge = consensusStrength === 'high'
-                ? `<span class="consensus-badge consensus-high">HIGH CONSENSUS (${agreementCount}/${totalModels} agree)</span>`
-                : `<span class="consensus-badge consensus-low">LOW CONSENSUS (${agreementCount}/${totalModels} agree)</span>`;
-
-            return `
-                <div class="consensus-section">
-                    <h3 style="margin-top: 0; display: flex; align-items: center; justify-content: space-between;">
-                        <span>Multi-Model Consensus</span>
-                        ${strengthBadge}
-                    </h3>
-
-                    <div class="model-comparison">
-                        <div class="model-row third-party-row">
-                            <span class="model-name">Third-Party (Aveni):</span>
-                            <span class="rating-badge rating-${getRatingClass(thirdPartyRating)}">${thirdPartyRating}</span>
-                            <span class="consensus-icon">📊 BASELINE</span>
-                        </div>
-                        ${modelRows}
-                    </div>
-
-                    ${consensus.has_outliers ? `
-                        <div class="consensus-note">
-                            ⚠ <strong>Note:</strong> Models disagree on severity - your expert judgment is valuable here!
-                        </div>
-                    ` : `
-                        <div class="consensus-note consensus-note-success">
-                            ✓ <strong>High agreement:</strong> Models generally agree on this assessment.
-                        </div>
-                    `}
-                </div>
-            `;
-        }
-
+        // Render all meetings
         function renderMeetings() {
             const container = document.getElementById('meetingsContainer');
 
-            const html = MEETING_DATA.map((meeting, index) => {
-                const review = reviews[meeting.meeting_id];
+            if (assessments.length === 0) {
+                container.innerHTML = '<div style="text-align: center; padding: 40px; color: white;">No assessments available.</div>';
+                return;
+            }
+
+            const html = assessments.map(assessment => {
+                const review = reviews[assessment.meeting_id];
                 const isReviewed = !!review;
 
-                // Hide reviewed meetings completely - they're finalized for the golden dataset
-                if (isReviewed) {
-                    return '';
-                }
+                // Hide reviewed meetings
+                if (isReviewed) return '';
 
-                const statusBadge = '<span class="status-badge status-pending">⏳ Pending Review</span>';
+                const aiResponse = assessment.ai_responses?.['claude-3-7-sonnet'];
+                const agreement = checkAgreement(assessment);
 
                 return `
-                    <div class="meeting-card" id="card-${meeting.meeting_id}">
+                    <div class="meeting-card" id="card-${assessment.meeting_id}">
                         <div class="meeting-header">
-                            <div>
-                                <span class="meeting-id">${meeting.meeting_id}</span>
-                                ${statusBadge}
-                            </div>
-                            <div style="display: flex; gap: 10px;">
-                                ${(FEATURE_FLAGS.SHOW_AI_MODELS && meeting.ai_responses) ? `
-                                    <button class="btn btn-show-ai" id="btn-ai-${meeting.meeting_id}" onclick="toggleAIResponses('${meeting.meeting_id}')">
-                                        🤖 Show AI Model Responses
-                                    </button>
-                                ` : ''}
-                                <button class="btn btn-transcript" onclick="loadTranscript('${meeting.meeting_id}')">
-                                    📄 View Transcript
+                            <div class="meeting-id">Meeting: ${assessment.meeting_id}</div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <div class="agreement-badge ${agreement.badge}">${agreement.icon} ${agreement.text}</div>
+                                <button class="btn btn-transcript" onclick="loadTranscript('${assessment.meeting_id}')">
+                                    View Transcript
                                 </button>
                             </div>
                         </div>
 
-                        <div class="third-party-section">
-                            <h3 style="margin-top: 0;">Third-Party Assessment (Aveni)</h3>
+                        <div class="comparison-wrapper">
+                            <div class="comparison-grid">
+                                <!-- Third-Party (Aveni) Column -->
+                                <div class="system-column third-party">
+                                    <div class="system-header">
+                                        <div class="system-title">Third-Party (Aveni)</div>
+                                    </div>
+                                    <div class="rating-badge" style="background: ${getRatingColor(assessment.overall_rating)};">${assessment.overall_rating}</div>
 
-                            <div>
-                                <strong>Overall Rating:</strong>
-                                <span class="rating-badge rating-${getRatingClass(meeting.overall_rating)}">${meeting.overall_rating}</span>
-                            </div>
+                                    <div class="types-list">
+                                        <h4>Vulnerability Types:</h4>
+                                        <ul>
+                                            ${(assessment.vulnerability_types || []).map(type => `<li>${type}</li>`).join('')}
+                                        </ul>
+                                    </div>
 
-                            <div style="margin-top: 15px;">
-                                <strong>Vulnerability Types:</strong><br>
-                                ${meeting.vulnerability_types.map(type => `<span class="vuln-tag">${type}</span>`).join('')}
-                            </div>
+                                    <div class="summary-section">
+                                        <h4>Evidence:</h4>
+                                        ${(assessment.evidence_quotes || []).map(quote =>
+                                            `<div class="evidence-quote">${quote}</div>`
+                                        ).join('')}
+                                    </div>
+                                </div>
 
-                            <div class="evidence-list">
-                                <strong>Evidence Quotes:</strong>
-                                ${meeting.evidence_quotes.map(quote =>
-                                    `<div class="evidence-item">${quote}</div>`
-                                ).join('')}
+                                <!-- AI Model (Claude 3.7) Column -->
+                                <div class="system-column ai-model">
+                                    <div class="system-header">
+                                        <div class="system-title">AI Model (Claude 3.7)</div>
+                                        <div class="match-icon">${agreement.icon}</div>
+                                    </div>
+                                    ${aiResponse ? `
+                                        <div class="rating-badge" style="background: ${getRatingColor(aiResponse.rating)};">${aiResponse.rating}</div>
+
+                                        ${aiResponse.reasoning ? `
+                                            <div class="summary-section">
+                                                <h4>Summary:</h4>
+                                                <div class="summary-text">${aiResponse.reasoning}</div>
+                                            </div>
+                                        ` : ''}
+
+                                        ${(aiResponse.vulnerability_types || []).map((type, idx) => {
+                                            const evidence = aiResponse.evidence?.[idx] || '';
+                                            return `
+                                                <div class="vulnerability-item">
+                                                    <div class="vulnerability-type">${type}</div>
+                                                    ${evidence ? `<div class="evidence-quote">${evidence}</div>` : ''}
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    ` : '<div class="summary-section"><h4>No AI assessment available</h4></div>'}
+                                </div>
                             </div>
                         </div>
 
-                        ${renderAIResponsesSection(meeting)}
+                        <!-- Review Actions -->
+                        <div class="actions">
+                            <button class="btn btn-agree" onclick="agreeWithAssessment('${assessment.meeting_id}')">
+                                ✓ Agree - Assessment is Correct
+                            </button>
+                            <button class="btn btn-disagree" onclick="showCorrectionForm('${assessment.meeting_id}')">
+                                ✗ Disagree - Needs Correction
+                            </button>
+                            <button class="btn btn-skip" onclick="skipMeeting('${assessment.meeting_id}')">
+                                ⏭ Skip for Now
+                            </button>
+                            ${assessment.model_consensus && assessment.model_consensus.models ? `
+                                <button class="btn btn-show-models" onclick="toggleOtherModels('${assessment.meeting_id}')">
+                                    🤖 Show Other AI Models
+                                </button>
+                            ` : ''}
+                        </div>
 
-                        ${meeting.model_consensus ? renderConsensusSection(meeting) : ''}
+                        <!-- Correction Form (hidden by default) -->
+                        <div class="correction-form" id="form-${assessment.meeting_id}">
+                            <h3 style="margin-bottom: 20px;">Provide Correct Assessment</h3>
 
-                        ${!isReviewed ? `
-                            <div class="actions">
-                                <button class="btn btn-agree" onclick="agreeWithAssessment('${meeting.meeting_id}')">
-                                    ✓ Agree - Assessment is Correct
-                                </button>
-                                <button class="btn btn-disagree" onclick="showCorrectionForm('${meeting.meeting_id}')">
-                                    ✗ Disagree - Needs Correction
-                                </button>
-                                <button class="btn btn-skip" onclick="skipMeeting('${meeting.meeting_id}')">
-                                    ⏭ Skip for Now
-                                </button>
+                            <div class="form-group">
+                                <label>Correct Overall Rating:</label>
+                                <select id="rating-${assessment.meeting_id}">
+                                    <option value="">-- Select --</option>
+                                    <option value="Critical/5">Critical/5</option>
+                                    <option value="High/4">High/4</option>
+                                    <option value="Medium/3">Medium/3</option>
+                                    <option value="Low/2">Low/2</option>
+                                    <option value="Marginal/1">Marginal/1</option>
+                                    <option value="None/0">None/0</option>
+                                </select>
                             </div>
 
-                            <div class="correction-form" id="form-${meeting.meeting_id}">
-                                <h3>Provide Correct Assessment</h3>
+                            <div class="form-group">
+                                <label>Correct Vulnerability Types (comma-separated):</label>
+                                <input type="text" id="types-${assessment.meeting_id}"
+                                       placeholder="e.g., Health: Mental Health, Resilience: Over-indebtedness">
+                            </div>
 
-                                <div class="form-group">
-                                    <label>Correct Overall Rating:</label>
-                                    <select id="rating-${meeting.meeting_id}">
-                                        <option value="">-- Select --</option>
-                                        <option value="Critical/5">Critical/5</option>
-                                        <option value="High/4">High/4</option>
-                                        <option value="Medium/3">Medium/3</option>
-                                        <option value="Low/2">Low/2</option>
-                                        <option value="Marginal/1">Marginal/1</option>
-                                        <option value="None/0">None/0</option>
-                                    </select>
-                                </div>
+                            <div class="form-group">
+                                <label>Reasoning for Correction:</label>
+                                <textarea id="reasoning-${assessment.meeting_id}"
+                                          placeholder="Explain why you disagree with the third-party assessment..."></textarea>
+                            </div>
 
-                                <div class="form-group">
-                                    <label>Correct Vulnerability Types (comma-separated):</label>
-                                    <input type="text" id="types-${meeting.meeting_id}"
-                                           placeholder="e.g., Health: Mental Health, Resilience: Over-indebtedness">
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Reasoning for Correction:</label>
-                                    <textarea id="reasoning-${meeting.meeting_id}"
-                                              placeholder="Explain why you disagree with the third-party assessment..."></textarea>
-                                </div>
-
-                                <button class="btn btn-agree" onclick="submitCorrection('${meeting.meeting_id}')">
+                            <div style="display: flex; gap: 12px;">
+                                <button class="btn btn-agree" onclick="submitCorrection('${assessment.meeting_id}')">
                                     Submit Correction
                                 </button>
-                                <button class="btn btn-skip" onclick="hideCorrectionForm('${meeting.meeting_id}')">
+                                <button class="btn btn-skip" onclick="hideCorrectionForm('${assessment.meeting_id}')">
                                     Cancel
                                 </button>
                             </div>
-                        ` : `
-                            <div class="review-summary">
-                                <h4>Your Review</h4>
-                                ${review.action === 'agree'
-                                    ? '<p style="color: #2e7d32; font-weight: 600;">You agreed with this assessment.</p>'
-                                    : `
-                                        <p><strong>Corrected Rating:</strong> ${review.corrected_rating}</p>
-                                        <p><strong>Corrected Types:</strong> ${review.corrected_types}</p>
-                                        <p><strong>Reasoning:</strong> ${review.reasoning}</p>
-                                    `
-                                }
+                        </div>
+
+                        <!-- Other AI Models (hidden by default) -->
+                        ${assessment.model_consensus && assessment.model_consensus.models ? `
+                            <div class="other-models-section" id="models-${assessment.meeting_id}">
+                                <h3 style="margin-bottom: 20px; color: #2d3748;">📊 Model Consensus & Other AI Responses</h3>
+
+                                <div class="model-comparison">
+                                    <div class="model-name">🎯 Model Consensus Summary</div>
+                                    <div class="summary-section">
+                                        <h4>Consensus Strength:</h4>
+                                        <p style="color: #4a5568; text-transform: capitalize;">${assessment.model_consensus.consensus_strength || 'N/A'}</p>
+                                    </div>
+                                    <div class="summary-section">
+                                        <h4>Agreement Count:</h4>
+                                        <p style="color: #4a5568;">${assessment.model_consensus.agreement_count || 0} out of ${assessment.model_consensus.total_models || 0} models</p>
+                                    </div>
+                                </div>
+
+                                ${Object.entries(assessment.model_consensus.models || {}).map(([modelKey, modelData]) => `
+                                    <div class="model-comparison">
+                                        <div class="model-name">🤖 ${modelKey.replace(/-/g, ' ').toUpperCase()}</div>
+                                        <div class="rating-badge" style="background: ${getRatingColor(modelData.rating)};">
+                                            ${modelData.rating}
+                                        </div>
+                                        <div class="summary-section">
+                                            <h4>Agreement with Third-Party:</h4>
+                                            <p style="color: ${modelData.agrees_with_third_party ? '#48bb78' : '#f56565'};">
+                                                ${modelData.agrees_with_third_party ? '✅ Agrees' : '❌ Disagrees'}
+                                            </p>
+                                        </div>
+                                        <div class="summary-section">
+                                            <h4>Vulnerability Types:</h4>
+                                            <ul>
+                                                ${(modelData.types || []).map(type => `<li>${type}</li>`).join('')}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                `).join('')}
                             </div>
-                        `}
+                        ` : ''}
                     </div>
                 `;
             }).join('');
@@ -1304,7 +791,7 @@
                 return;
             }
 
-            const meeting = MEETING_DATA.find(m => m.meeting_id === meetingId);
+            const meeting = assessments.find(m => m.meeting_id === meetingId);
             const review = {
                 action: 'agree',
                 meeting_id: meetingId,
@@ -1314,18 +801,10 @@
                 timestamp: new Date().toISOString()
             };
 
-            // Save to local state
             reviews[meetingId] = review;
-
-            // Save to DynamoDB
-            const saved = await saveReviewToDynamoDB(review);
-
-            if (saved) {
-                // Reload pending reviews from API (this meeting should now be gone)
-                await fetchPendingReviews();
-            }
-
-            updateStats();
+            await saveReviewToDynamoDB(review);
+            await fetchAssessments();
+            calculateStats();
             renderMeetings();
         }
 
@@ -1353,7 +832,7 @@
                 return;
             }
 
-            const meeting = MEETING_DATA.find(m => m.meeting_id === meetingId);
+            const meeting = assessments.find(m => m.meeting_id === meetingId);
             const review = {
                 action: 'correct',
                 meeting_id: meetingId,
@@ -1366,18 +845,10 @@
                 timestamp: new Date().toISOString()
             };
 
-            // Save to local state
             reviews[meetingId] = review;
-
-            // Save to DynamoDB
-            const saved = await saveReviewToDynamoDB(review);
-
-            if (saved) {
-                // Reload pending reviews from API (this meeting should now be gone)
-                await fetchPendingReviews();
-            }
-
-            updateStats();
+            await saveReviewToDynamoDB(review);
+            await fetchAssessments();
+            calculateStats();
             renderMeetings();
         }
 
@@ -1393,46 +864,49 @@
 
         async function loadTranscript(meetingId) {
             alert(`Loading transcript for ${meetingId}...\n\nThis will fetch from: ${API_ENDPOINT}/transcript/${meetingId}`);
-            // Implement actual API call here
         }
 
-        function exportReviews() {
-            const email = document.getElementById('coachEmail').value;
-            if (!email) {
-                alert('Please enter your email first');
-                return;
+        async function saveReviewToDynamoDB(review) {
+            try {
+                const response = await fetch(`${API_ENDPOINT}/review`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(review)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    console.error('Failed to save review to DynamoDB:', errorData);
+                    alert('Warning: Review saved locally but failed to save to database.');
+                    return false;
+                }
+
+                const result = await response.json();
+                console.log('Review saved to DynamoDB:', result);
+                return true;
+            } catch (error) {
+                console.error('Error saving review to DynamoDB:', error);
+                alert('Warning: Review saved locally but failed to save to database.');
+                return false;
             }
-
-            const reviewCount = Object.keys(reviews).length;
-            if (reviewCount === 0) {
-                alert('No reviews to export yet');
-                return;
-            }
-
-            // Generate CSV
-            let csv = 'meeting_id|coach_email|action|third_party_rating|third_party_types|corrected_rating|corrected_types|reasoning|timestamp\n';
-
-            Object.values(reviews).forEach(review => {
-                csv += `${review.meeting_id}|${review.coach_email}|${review.action}|`;
-                csv += `${review.third_party_rating}|${review.third_party_types}|`;
-                csv += `${review.corrected_rating || ''}|${review.corrected_types || ''}|`;
-                csv += `${(review.reasoning || '').replace(/\n/g, ' ')}|${review.timestamp}\n`;
-            });
-
-            // Download
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `meeting_level_validation_${email.split('@')[0]}_${new Date().toISOString().split('T')[0]}.csv`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
-
-            alert(`✓ Exported ${reviewCount} reviews!`);
         }
 
+        function toggleOtherModels(meetingId) {
+            const section = document.getElementById(`models-${meetingId}`);
+            const button = event.target;
+
+            if (section.classList.contains('active')) {
+                section.classList.remove('active');
+                button.textContent = '🤖 Show Other AI Models';
+            } else {
+                section.classList.add('active');
+                button.textContent = '🤖 Hide Other AI Models';
+            }
+        }
+
+        // Initialize on page load
         window.addEventListener('load', init);
     </script>
 </body>

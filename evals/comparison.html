@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vulnerability Assessment Comparison</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #2d3748;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.95;
+        }
+
+        /* Dashboard Stats */
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #718096;
+            font-size: 0.95em;
+            font-weight: 500;
+        }
+
+        /* Meeting Cards */
+        .meeting-card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+            transition: transform 0.2s;
+        }
+
+        .meeting-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+
+        .meeting-header {
+            background: linear-gradient(135deg, #2d3748 0%, #1a202c 100%);
+            color: white;
+            padding: 25px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .meeting-id {
+            font-size: 1.3em;
+            font-weight: 600;
+        }
+
+        .agreement-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+
+        .agreement-unanimous {
+            background: #48bb78;
+            color: white;
+        }
+
+        .agreement-partial {
+            background: #ed8936;
+            color: white;
+        }
+
+        /* Comparison Grid */
+        .comparison-wrapper {
+            overflow-x: auto;
+        }
+
+        .comparison-grid {
+            display: table;
+            width: 100%;
+            min-width: 1000px;
+            table-layout: fixed;
+        }
+
+        .system-column {
+            display: table-cell;
+            width: 33.33%;
+            padding: 30px;
+            vertical-align: top;
+            border-right: 2px solid #e2e8f0;
+        }
+
+        .system-column:last-child {
+            border-right: none;
+        }
+
+        .system-column.ground-truth {
+            background: linear-gradient(135deg, #f0fff4 0%, #c6f6d5 100%);
+        }
+
+        .system-column.your-model {
+            background: linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%);
+        }
+
+        .system-column.gpt4 {
+            background: linear-gradient(135deg, #fffaf0 0%, #feebc8 100%);
+        }
+
+        .system-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid rgba(0,0,0,0.1);
+        }
+
+        .system-title {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #2d3748;
+        }
+
+        .match-icon {
+            font-size: 1.8em;
+        }
+
+        .rating-badge {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 25px;
+            color: white;
+            font-weight: 700;
+            font-size: 1.1em;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .summary-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .summary-section h4 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1em;
+            font-weight: 600;
+        }
+
+        .summary-text {
+            color: #4a5568;
+            line-height: 1.6;
+            font-size: 0.95em;
+        }
+
+        .vulnerability-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .vulnerability-type {
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 0.95em;
+        }
+
+        .evidence-quote {
+            background: #f7fafc;
+            padding: 12px;
+            border-radius: 6px;
+            font-style: italic;
+            color: #4a5568;
+            margin: 8px 0;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .reasoning {
+            background: #fffaf0;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 8px;
+            font-size: 0.9em;
+            color: #744210;
+            line-height: 1.5;
+        }
+
+        .reasoning-label {
+            font-weight: 600;
+            color: #c05621;
+            margin-bottom: 5px;
+        }
+
+        /* Legacy format */
+        .types-list {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .types-list ul {
+            margin: 10px 0 0 20px;
+            color: #4a5568;
+        }
+
+        .types-list li {
+            margin: 5px 0;
+            line-height: 1.5;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 1.8em;
+            }
+
+            .dashboard {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .stat-value {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 FCA Vulnerability Assessment Comparison</h1>
+            <p class="subtitle">Third-Party (Aveni) vs AI Model (Claude 3.7 Sonnet)</p>
+        </header>
+
+        <!-- Performance Dashboard -->
+        <div class="dashboard" id="dashboard">
+            <div class="stat-card">
+                <div class="stat-value" id="totalCount">Loading...</div>
+                <div class="stat-label">Total Meetings</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="agreementCount">-</div>
+                <div class="stat-label">Agreements</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="disagreementCount">-</div>
+                <div class="stat-label">Disagreements</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="exactMatchCount">-</div>
+                <div class="stat-label">Exact Matches</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="agreementPercent">-</div>
+                <div class="stat-label">Agreement Rate</div>
+            </div>
+        </div>
+
+        <!-- Meeting Comparisons -->
+        <div id="meetingsContainer">
+            <div style="text-align: center; padding: 40px; color: white; font-size: 1.2em;">
+                Loading assessments...
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // API Configuration
+        const API_ENDPOINT = 'https://zrjzpoao4d.execute-api.eu-west-2.amazonaws.com/Prod';
+
+        let assessments = [];
+
+        // Initialize page
+        async function init() {
+            try {
+                await fetchAssessments();
+                calculateStats();
+                renderMeetings();
+            } catch (error) {
+                console.error('Failed to load assessments:', error);
+                document.getElementById('meetingsContainer').innerHTML =
+                    '<div style="text-align: center; padding: 40px; color: white;">Error loading assessments. Please refresh the page.</div>';
+            }
+        }
+
+        // Fetch assessments from API
+        async function fetchAssessments() {
+            const response = await fetch(`${API_ENDPOINT}/reviews/pending`);
+            if (!response.ok) {
+                throw new Error(`API returned ${response.status}`);
+            }
+            const data = await response.json();
+            assessments = data.assessments || [];
+            console.log(`Loaded ${assessments.length} assessments`);
+        }
+
+        // Calculate agreement statistics
+        function calculateStats() {
+            const total = assessments.length;
+            let agreements = 0;
+            let exactMatches = 0;
+
+            assessments.forEach(assessment => {
+                const aiResponse = assessment.ai_responses?.['claude-3-7-sonnet'];
+                if (!aiResponse) return;
+
+                // Check rating match
+                const ratingMatch = aiResponse.rating === assessment.overall_rating;
+                if (ratingMatch) exactMatches++;
+
+                // Check vulnerability types overlap (partial agreement)
+                const thirdPartyTypes = new Set(assessment.vulnerability_types || []);
+                const aiTypes = new Set(aiResponse.vulnerability_types || []);
+                const intersection = new Set([...thirdPartyTypes].filter(x => aiTypes.has(x)));
+
+                if (intersection.size > 0 || ratingMatch) {
+                    agreements++;
+                }
+            });
+
+            const disagreements = total - agreements;
+            const agreementPercent = total > 0 ? Math.round((agreements / total) * 100) : 0;
+
+            document.getElementById('totalCount').textContent = total;
+            document.getElementById('agreementCount').textContent = agreements;
+            document.getElementById('disagreementCount').textContent = disagreements;
+            document.getElementById('exactMatchCount').textContent = exactMatches;
+            document.getElementById('agreementPercent').textContent = `${agreementPercent}%`;
+        }
+
+        // Get rating background color
+        function getRatingColor(rating) {
+            if (!rating) return '#9e9e9e';
+            if (rating.includes('Critical') || rating.includes('/5')) return '#d32f2f';
+            if (rating.includes('High') || rating.includes('/4')) return '#f57c00';
+            if (rating.includes('Medium') || rating.includes('/3')) return '#fbc02d';
+            if (rating.includes('Low') || rating.includes('/2')) return '#388e3c';
+            if (rating.includes('Marginal') || rating.includes('/1')) return '#689f38';
+            if (rating.includes('None') || rating.includes('/0')) return '#7cb342';
+            return '#9e9e9e';
+        }
+
+        // Check if two assessments agree
+        function checkAgreement(assessment) {
+            const aiResponse = assessment.ai_responses?.['claude-3-7-sonnet'];
+            if (!aiResponse) return { agree: false, icon: '❓', badge: 'agreement-partial' };
+
+            const ratingMatch = aiResponse.rating === assessment.overall_rating;
+
+            // Check vulnerability types overlap
+            const thirdPartyTypes = new Set(assessment.vulnerability_types || []);
+            const aiTypes = new Set(aiResponse.vulnerability_types || []);
+            const intersection = new Set([...thirdPartyTypes].filter(x => aiTypes.has(x)));
+
+            if (ratingMatch && intersection.size === thirdPartyTypes.size && intersection.size === aiTypes.size) {
+                return { agree: true, icon: '✅', badge: 'agreement-unanimous', text: 'Full Agreement' };
+            } else if (ratingMatch || intersection.size > 0) {
+                return { agree: true, icon: '🟡', badge: 'agreement-partial', text: 'Partial Agreement' };
+            } else {
+                return { agree: false, icon: '❌', badge: 'agreement-partial', text: 'Disagreement' };
+            }
+        }
+
+        // Render all meetings
+        function renderMeetings() {
+            const container = document.getElementById('meetingsContainer');
+
+            if (assessments.length === 0) {
+                container.innerHTML = '<div style="text-align: center; padding: 40px; color: white;">No assessments available.</div>';
+                return;
+            }
+
+            const html = assessments.map(assessment => {
+                const aiResponse = assessment.ai_responses?.['claude-3-7-sonnet'];
+                const agreement = checkAgreement(assessment);
+
+                return `
+                    <div class="meeting-card">
+                        <div class="meeting-header">
+                            <div class="meeting-id">Meeting: ${assessment.meeting_id}</div>
+                            <div class="agreement-badge ${agreement.badge}">${agreement.text || 'Comparison'}</div>
+                        </div>
+
+                        <div class="comparison-wrapper">
+                            <div class="comparison-grid">
+                                <!-- Third-Party (Aveni) Column -->
+                                <div class="system-column ground-truth">
+                                    <div class="system-header">
+                                        <div class="system-title">📋 Third-Party (Aveni)</div>
+                                    </div>
+                                    <div class="rating-badge" style="background: ${getRatingColor(assessment.overall_rating)};">${assessment.overall_rating}</div>
+
+                                    <div class="types-list">
+                                        <h4>Vulnerability Types:</h4>
+                                        <ul>
+                                            ${(assessment.vulnerability_types || []).map(type => `<li>${type}</li>`).join('')}
+                                        </ul>
+                                    </div>
+
+                                    <div class="summary-section">
+                                        <h4>Evidence:</h4>
+                                        ${(assessment.evidence_quotes || []).map(quote =>
+                                            `<div class="evidence-quote">${quote}</div>`
+                                        ).join('')}
+                                    </div>
+                                </div>
+
+                                <!-- AI Model (Claude 3.7) Column -->
+                                <div class="system-column your-model">
+                                    <div class="system-header">
+                                        <div class="system-title">🤖 AI Model (Claude 3.7)</div>
+                                        <div class="match-icon">${agreement.icon}</div>
+                                    </div>
+                                    ${aiResponse ? `
+                                        <div class="rating-badge" style="background: ${getRatingColor(aiResponse.rating)};">${aiResponse.rating}</div>
+
+                                        ${aiResponse.reasoning ? `
+                                            <div class="summary-section">
+                                                <h4>Summary:</h4>
+                                                <div class="summary-text">${aiResponse.reasoning}</div>
+                                            </div>
+                                        ` : ''}
+
+                                        ${(aiResponse.vulnerability_types || []).map((type, idx) => {
+                                            const evidence = aiResponse.evidence?.[idx] || '';
+                                            return `
+                                                <div class="vulnerability-item">
+                                                    <div class="vulnerability-type">${type}</div>
+                                                    ${evidence ? `<div class="evidence-quote">${evidence}</div>` : ''}
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    ` : '<div class="summary-section"><h4>No AI assessment available</h4></div>'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
