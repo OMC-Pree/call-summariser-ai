@@ -545,6 +545,7 @@ def lambda_handler(event, context):
 
     severity_by_id = {c["id"]: c.get("severity", "low") for c in STARTER_SESSION_CHECKS}
     has_high_severity_failures = False
+    has_vulnerability = False
 
     for r in data.get("results", []):
         r["evidence_quote"] = r.get("evidence_quote") or ""
@@ -553,6 +554,12 @@ def lambda_handler(event, context):
 
         if r.get("status") == "Fail" and severity_by_id.get(r.get("id")) == "high":
             has_high_severity_failures = True
+
+        # Check if vulnerability exists (triggers detailed FCA FG21/1 assessment)
+        # Trigger when: Competent (found & handled) OR Fail (found but not handled)
+        # Don't trigger when: NotApplicable (no vulnerability present)
+        if r.get("id") == "vulnerability_identified" and r.get("status") in ["Competent", "Fail"]:
+            has_vulnerability = True
 
     data["overall"]["has_high_severity_failures"] = has_high_severity_failures
 
@@ -568,5 +575,6 @@ def lambda_handler(event, context):
     return {
         "caseData": data,
         "caseKey": key,
-        "passRate": pass_rate
+        "passRate": pass_rate,
+        "hasVulnerability": has_vulnerability  # Trigger detailed vulnerability assessment
     }

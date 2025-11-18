@@ -128,7 +128,8 @@
       "ResultPath": "$.caseCheckResult",
       "ResultSelector": {
         "caseKey.$": "$.Payload.caseKey",
-        "passRate.$": "$.Payload.passRate"
+        "passRate.$": "$.Payload.passRate",
+        "hasVulnerability.$": "$.Payload.hasVulnerability"
       },
       "Retry": [
         {
@@ -149,6 +150,54 @@
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
           "Next": "HandleFailure"
+        }
+      ],
+      "Next": "CheckVulnerability"
+    },
+    "CheckVulnerability": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.caseCheckResult.hasVulnerability",
+          "BooleanEquals": true,
+          "Next": "AssessVulnerability"
+        }
+      ],
+      "Default": "A2IGateDecision"
+    },
+    "AssessVulnerability": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${AssessVulnerabilityFunctionArn}",
+        "Payload": {
+          "redactedTranscriptKey.$": "$.redactedTranscriptKey",
+          "meetingId.$": "$.meetingId"
+        }
+      },
+      "ResultPath": "$.vulnerabilityResult",
+      "ResultSelector": {
+        "vulnerabilityRating.$": "$.Payload.vulnerabilityRating"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["ThrottlingException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.vulnerabilityError",
+          "Next": "A2IGateDecision"
         }
       ],
       "Next": "A2IGateDecision"

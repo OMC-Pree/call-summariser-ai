@@ -285,6 +285,7 @@ Resources:
         NormaliseRolesFunctionArn: !GetAtt NormaliseRolesFunction.Arn
         PIIDetectRedactFunctionArn: !GetAtt PIIDetectRedactFunction.Arn
         CaseCheckFunctionArn: !GetAtt CaseCheckFunction.Arn
+        AssessVulnerabilityFunctionArn: !GetAtt AssessVulnerabilityFunction.Arn
         A2IReviewFunctionArn: !GetAtt A2IReviewFunction.Arn
         UpdateStatusFunctionArn: !GetAtt UpdateStatusFunction.Arn
         EventBusName: !Ref SummariserEventBus
@@ -297,6 +298,8 @@ Resources:
             FunctionName: !Ref PIIDetectRedactFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref CaseCheckFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AssessVulnerabilityFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref A2IReviewFunction
         - LambdaInvokePolicy:
@@ -455,6 +458,41 @@ Resources:
                 - bedrock:RetrieveAndGenerate
               Resource:
                 - !Sub "arn:aws:bedrock:${AWS::Region}:*:knowledge-base/*"
+
+  ### Assess Vulnerability Function (triggered when case check identifies vulnerabilities) ###
+  AssessVulnerabilityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: assess_vulnerability.app.lambda_handler
+      Timeout: 180  # 3 minutes for detailed assessment
+      MemorySize: 1024
+      Environment:
+        Variables:
+          PROMPT_PARAM_NAME_VULNERABILITY: /call-summariser/prompts/vulnerability-assessment/current
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AssessmentResultsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:GetPrompt
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:prompt/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/call-summariser/*"
 
   PersistSummaryFunction:
     Type: AWS::Serverless::Function

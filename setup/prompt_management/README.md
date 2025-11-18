@@ -15,7 +15,9 @@ Bedrock Prompt Management allows you to:
 
 - `summary_prompt_template.json` - Template for call summary generation prompt
 - `case_check_prompt_template.json` - Template for compliance case checking prompt
+- `vulnerability_assessment_prompt_template.json` - Template for FCA FG21/1 vulnerability assessment prompt
 - `create_prompts.py` - Automation script to create prompts via API
+- `init_parameters.sh` - Script to initialize Parameter Store with prompt ARNs
 - `README.md` - This file
 
 ## Quick Start
@@ -34,6 +36,7 @@ python create_prompts.py --create all
 # Or create individual prompts
 python create_prompts.py --create summary
 python create_prompts.py --create case-check
+python create_prompts.py --create vulnerability
 
 # List existing prompts
 python create_prompts.py --list
@@ -112,7 +115,27 @@ If you prefer to use the AWS Console:
    - `checklist_json` - JSON checklist of compliance checks
    - `cleaned_transcript` - The cleaned transcript to audit
 
-4. **Create Versions**
+4. **Create Vulnerability Assessment Prompt**
+   - Name: `call-summariser-vulnerability-assessment-v1`
+   - Description: "FCA FG21/1 customer vulnerability assessment for financial coaching conversations"
+   - Follow similar steps using `vulnerability_assessment_prompt_template.json`
+
+   **Variables:**
+   - `cleaned_transcript` - The PII-redacted transcript to assess for vulnerabilities
+
+   **Model Configuration:**
+   - Model: Claude 3.7 Sonnet (`anthropic.claude-3-7-sonnet-20250219-v1:0`)
+   - Temperature: 0.0 (deterministic for compliance assessment)
+   - Max tokens: 3000
+
+   **Key Features:**
+   - Assesses customer vulnerability according to FCA FG21/1 guidance
+   - Provides rating scale from None/0 to Critical/5
+   - Identifies specific vulnerability categories (Capability, Health, Life Events, Resilience)
+   - Requires direct evidence quotes from transcript
+   - Only triggered when case check identifies potential vulnerability
+
+5. **Create Versions**
    - After creating each prompt, click "Create version"
    - Version 1 description: "Initial baseline version"
    - Copy the Version ARN (you'll need this for Lambda configuration)
@@ -133,6 +156,11 @@ After creating prompts, you need to:
    ```
    PROMPT_ARN_CASE_CHECK=arn:aws:bedrock:eu-west-2:ACCOUNT:prompt/PROMPT_ID:VERSION
    USE_PROMPT_MANAGEMENT=true
+   ```
+
+   For `assess_vulnerability` Lambda:
+   ```
+   PROMPT_PARAM_NAME_VULNERABILITY=/call-summariser/prompts/vulnerability-assessment/current
    ```
 
 2. **Update IAM Permissions**

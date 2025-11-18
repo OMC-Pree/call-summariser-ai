@@ -178,7 +178,7 @@ def get_prompt_details(prompt_id: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Manage Bedrock Prompt Management prompts')
-    parser.add_argument('--create', choices=['summary', 'case-check', 'all'],
+    parser.add_argument('--create', choices=['summary', 'case-check', 'vulnerability', 'all'],
                        help='Create prompt(s)')
     parser.add_argument('--list', action='store_true',
                        help='List all prompts')
@@ -237,6 +237,25 @@ def main():
                 }
             except Exception as e:
                 print(f"Failed to create case check prompt: {e}")
+
+        if args.create in ['vulnerability', 'all']:
+            print("\n" + "="*80)
+            print("Creating Vulnerability Assessment Prompt")
+            print("="*80)
+
+            template_path = script_dir / 'vulnerability_assessment_prompt_template.json'
+            template_data = load_prompt_template(template_path)
+
+            try:
+                prompt_id, prompt_arn, version, version_arn = create_prompt(template_data)
+                results['vulnerability'] = {
+                    'id': prompt_id,
+                    'arn': prompt_arn,
+                    'version': version,
+                    'version_arn': version_arn
+                }
+            except Exception as e:
+                print(f"Failed to create vulnerability assessment prompt: {e}")
 
         # Save results to file
         if results:

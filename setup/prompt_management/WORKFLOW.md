@@ -5,7 +5,8 @@
 ```
 AWS Parameter Store (SSM)
 ├── /call-summariser/prompts/summary/current → ARN
-└── /call-summariser/prompts/case-check/current → ARN
+├── /call-summariser/prompts/case-check/current → ARN
+└── /call-summariser/prompts/vulnerability-assessment/current → ARN
                  ↓
          Lambda (at startup)
          Reads current prompt ARN
@@ -176,6 +177,7 @@ python create_prompts.py --get 576JPUH90Y
 |----------------|-------------|---------------|
 | `/call-summariser/prompts/summary/current` | Active summary prompt ARN | `arn:aws:bedrock:eu-west-2:ACCOUNT_ID:prompt/576JPUH90Y:1` |
 | `/call-summariser/prompts/case-check/current` | Active case check prompt ARN | `arn:aws:bedrock:eu-west-2:ACCOUNT_ID:prompt/JFLTWRZ5F4:1` |
+| `/call-summariser/prompts/vulnerability-assessment/current` | Active vulnerability assessment prompt ARN | `arn:aws:bedrock:eu-west-2:ACCOUNT_ID:prompt/OQNE6VMD21:1` |
 | `/call-summariser/prompts/summary/test` | (Optional) Test prompt ARN | `arn:aws:bedrock:eu-west-2:ACCOUNT_ID:prompt/576JPUH90Y:2` |
 
 ---
