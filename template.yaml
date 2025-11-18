@@ -33,9 +33,12 @@ Globals:
         # A2I — set Flow ARN when ready; leave portal URL empty if not used in UI
         A2I_FLOW_ARN_CASE: "arn:aws:sagemaker:eu-west-2:058264250790:flow-definition/case-check-flow-min"
         A2I_PORTAL_URL: ""
-        # DynamoDB table and S3 bucket - set globally for all Lambdas
+        # DynamoDB tables and S3 buckets - set globally for all Lambdas
         SUMMARY_JOB_TABLE: !Ref SummaryJobTable
         SUMMARY_BUCKET: !Ref SummaryBucket
+        ASSESSMENT_RESULTS_TABLE: !Ref AssessmentResultsTable
+        GOLDEN_DATA_BUCKET: !Ref GoldenDataBucket
+        CASE_CHECK_DEFINITIONS_TABLE: !Ref CaseCheckDefinitionsTable
 
 Resources:
   ### Shared Dependencies Layer ###
@@ -71,10 +74,34 @@ Resources:
             Prefix: "summaries/"
             Status: Enabled
             ExpirationInDays: 90
-          - Id: "DeleteOldAthenaResults" # <-- NEW
+          - Id: "DeleteOldAthenaResults"
             Prefix: "athena-results/"
             Status: Enabled
             ExpirationInDays: 30
+
+  ### S3 Bucket for Golden Data (ML Training Datasets) ###
+  GoldenDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-golden-data"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: "TransitionOldDataToGlacier"
+            Prefix: "training-data/"
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 365
+                StorageClass: GLACIER
+          - Id: "DeleteOldEvaluations"
+            Prefix: "evaluations/"
+            Status: Enabled
+            ExpirationInDays: 180
 
   ### DynamoDB Table for Job Status ###
   SummaryJobTable:
@@ -123,33 +150,11 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
-  ### DynamoDB Table for Vulnerability Ground Truth Reviews ###
-  VulnerabilityGroundTruthReviewsTable:
+  ### DynamoDB Table for ALL Assessments (Unified Pro Architecture) ###
+  AssessmentResultsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: vulnerability-ground-truth-reviews
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: review_id
-          AttributeType: S
-        - AttributeName: meeting_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: review_id
-          KeyType: HASH
-      GlobalSecondaryIndexes:
-        - IndexName: MeetingIndex
-          KeySchema:
-            - AttributeName: meeting_id
-              KeyType: HASH
-          Projection:
-            ProjectionType: ALL
-
-  ### DynamoDB Table for Vulnerability Assessments (Source of Truth) ###
-  VulnerabilityAssessmentsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: vulnerability-assessments
+      TableName: assessment-results
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: meeting_id
@@ -158,7 +163,13 @@ Resources:
           AttributeType: S
         - AttributeName: review_status
           AttributeType: S
-        - AttributeName: assessed_at
+        - AttributeName: created_at
+          AttributeType: S
+        - AttributeName: assessment_type
+          AttributeType: S
+        - AttributeName: reviewed_by
+          AttributeType: S
+        - AttributeName: reviewed_at
           AttributeType: S
       KeySchema:
         - AttributeName: meeting_id
@@ -170,7 +181,56 @@ Resources:
           KeySchema:
             - AttributeName: review_status
               KeyType: HASH
-            - AttributeName: assessed_at
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: AssessmentTypeIndex
+          KeySchema:
+            - AttributeName: assessment_type
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: CoachIndex
+          KeySchema:
+            - AttributeName: reviewed_by
+              KeyType: HASH
+            - AttributeName: reviewed_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  ### DynamoDB Table for Case Check Definitions (Configuration) ###
+  CaseCheckDefinitionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: case-check-definitions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: check_id
+          AttributeType: S
+        - AttributeName: session_type
+          AttributeType: S
+        - AttributeName: order
+          AttributeType: N
+      KeySchema:
+        - AttributeName: check_id
+          KeyType: HASH
+        - AttributeName: session_type
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: SessionTypeIndex
+          KeySchema:
+            - AttributeName: session_type
+              KeyType: HASH
+            - AttributeName: order
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -370,6 +430,10 @@ Resources:
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AssessmentResultsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref CaseCheckDefinitionsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -405,6 +469,8 @@ Resources:
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref SummaryBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AssessmentResultsTable
 
   A2IReviewFunction:
     Type: AWS::Serverless::Function
@@ -560,8 +626,7 @@ Resources:
         - S3ReadPolicy:
             BucketName: !Ref SummaryBucket
 
-  ### Save Vulnerability Ground Truth Review Lambda ###
-  ### GET /reviews/pending - Fetch pending vulnerability assessments ###
+  ### GET /reviews/pending - Fetch pending assessments (all types) ###
   GetPendingReviewsFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -572,7 +637,7 @@ Resources:
       Handler: get_pending_reviews.app.lambda_handler
       Environment:
         Variables:
-          ASSESSMENTS_TABLE: !Ref VulnerabilityAssessmentsTable
+          ASSESSMENTS_TABLE: !Ref AssessmentResultsTable
       Events:
         GetApi:
           Type: Api
@@ -586,10 +651,10 @@ Resources:
             Method: options
       Policies:
         - DynamoDBReadPolicy:
-            TableName: !Ref VulnerabilityAssessmentsTable
+            TableName: !Ref AssessmentResultsTable
 
   ### POST /review - Save coach review and mark assessment as reviewed ###
-  SaveVulnerabilityGroundTruthReviewFunction:
+  SaveGroundTruthReviewFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: summariser/
@@ -599,7 +664,7 @@ Resources:
       Handler: save_ground_truth_review.app.lambda_handler
       Environment:
         Variables:
-          ASSESSMENTS_TABLE: !Ref VulnerabilityAssessmentsTable
+          ASSESSMENTS_TABLE: !Ref AssessmentResultsTable
       Events:
         Api:
           Type: Api
@@ -613,7 +678,7 @@ Resources:
             Method: options
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref VulnerabilityAssessmentsTable
+            TableName: !Ref AssessmentResultsTable
 
   ### A2I Review Poller (flip IN_REVIEW -> COMPLETED)
   ReviewPollerFunction:
@@ -644,6 +709,36 @@ Resources:
               Action:
                 - sagemaker:DescribeHumanLoop
               Resource: "*"
+
+  ### Feedback Stream Processor - Collects feedback to golden dataset ###
+  FeedbackStreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: feedback_stream_processor.app.lambda_handler
+      Timeout: 300
+      MemorySize: 1024
+      Events:
+        AssessmentStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt AssessmentResultsTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 10
+            ParallelizationFactor: 2
+            MaximumRetryAttempts: 3
+            BisectBatchOnFunctionError: true
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AssessmentResultsTable
+        - S3CrudPolicy:
+            BucketName: !Ref GoldenDataBucket
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
 
   ### Health Check Endpoint ###
   HealthCheckFunction:

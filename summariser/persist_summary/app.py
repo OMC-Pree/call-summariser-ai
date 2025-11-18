@@ -4,13 +4,19 @@ Persists summary JSON to S3 and updates metadata index
 """
 import json
 import boto3
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from utils import helper
 from utils.error_handler import lambda_error_handler, ValidationError
-from utils.s3_partitioner import get_s3_partitioner
 from constants import *
 
 s3 = boto3.client("s3")
+dynamodb = boto3.resource('dynamodb')
+
+# Get table names from environment
+ASSESSMENT_RESULTS_TABLE = os.environ.get('ASSESSMENT_RESULTS_TABLE', 'assessment-results')
+assessment_table = dynamodb.Table(ASSESSMENT_RESULTS_TABLE)
 
 
 def _calculate_quality_score(data: dict, actions: list, themes: list) -> float:
@@ -174,6 +180,54 @@ def _save_summary_json(meeting_id: str, payload: dict, force: bool = False) -> t
     return latest_key, latest_key
 
 
+def _save_to_assessment_table(meeting_id: str, payload: dict, latest_key: str, transcript_key: str):
+    """
+    Save summary metadata to assessment-results DynamoDB table.
+    This enables coach review and training data collection.
+    """
+    try:
+        # Calculate TTL (90 days from now)
+        expires_at = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
+
+        assessment_table.put_item(Item={
+            'meeting_id': meeting_id,
+            'assessment_id': f"summary#{PROMPT_VERSION}",
+            'assessment_type': 'summary',
+            'ai_version': f"{PROMPT_VERSION}_{MODEL_VERSION}",
+            'model_name': MODEL_VERSION,
+
+            # AI Output (store as JSON string for flexibility)
+            'ai_output': json.dumps({
+                'summary_text': payload['summary'],
+                'key_points': payload.get('actions', []),
+                'themes': payload.get('themes', []),
+                'sentiment': payload.get('sentiment', {})
+            }),
+
+            # Review status
+            'review_status': 'pending',
+            'created_at': datetime.now(timezone.utc).isoformat(),
+
+            # Links to source data
+            'transcript_s3_key': transcript_key,
+            'summary_s3_key': latest_key,
+
+            # Session metadata
+            'session_type': 'initial-consultation',  # TODO: Get from event if available
+
+            # Summary-specific fields
+            'quality_score': Decimal(str(payload['quality_score'])),
+
+            # TTL
+            'expires_at': expires_at
+        })
+
+        helper.log_json("INFO", "ASSESSMENT_TABLE_UPDATED", meetingId=meeting_id, assessmentId=f"summary#{PROMPT_VERSION}")
+    except Exception as e:
+        # Log error but don't fail the Lambda (S3 save is primary)
+        helper.log_json("ERROR", "ASSESSMENT_TABLE_UPDATE_FAILED", meetingId=meeting_id, error=str(e))
+
+
 @lambda_error_handler()
 def lambda_handler(event, context):
     """
@@ -225,6 +279,10 @@ def lambda_handler(event, context):
 
     # Save to S3 (force overwrite if force_reprocess=True)
     run_key, latest_key = _save_summary_json(meeting_id, payload, force=force_reprocess)
+
+    # Save to assessment-results DynamoDB table (for coach review & training data)
+    transcript_key = event.get("transcriptKey") or event.get("redactedTranscriptKey") or ""
+    _save_to_assessment_table(meeting_id, payload, latest_key, transcript_key)
 
     # Extract metadata for DynamoDB
     metadata = {

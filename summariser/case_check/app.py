@@ -6,7 +6,8 @@ import json
 import os
 from typing import List, Optional, Tuple, Literal
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 from utils import helper
 from utils.error_handler import lambda_error_handler
@@ -26,6 +27,12 @@ except ImportError:
 bedrock = AWSClients.bedrock_runtime()
 s3 = AWSClients.s3()
 ssm = AWSClients.ssm()
+
+# DynamoDB client for assessment-results table
+import boto3
+dynamodb = boto3.resource('dynamodb')
+ASSESSMENT_RESULTS_TABLE = os.environ.get('ASSESSMENT_RESULTS_TABLE', 'assessment-results')
+assessment_table = dynamodb.Table(ASSESSMENT_RESULTS_TABLE)
 
 # Prompt Management configuration
 USE_PROMPT_MANAGEMENT = os.environ.get("USE_PROMPT_MANAGEMENT", "true").lower() == "true"
@@ -224,6 +231,74 @@ def _save_case_json(meeting_id: str, payload: dict, year: int = None, month: int
     )
     helper.log_json("INFO", "CASE_CHECK_SAVED", meetingId=meeting_id, s3Key=key)
     return key
+
+
+def _save_checks_to_assessment_table(meeting_id: str, case_data: dict, transcript_key: str):
+    """
+    Save individual case check results to assessment-results DynamoDB table.
+    Each check becomes a separate item for granular coach review.
+    """
+    try:
+        expires_at = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
+
+        for check_result in case_data.get('results', []):
+            check_id = check_result.get('id')
+            if not check_id:
+                continue
+
+            # Determine if this is the vulnerability check
+            is_vulnerability_check = (check_id == 'vulnerability_identified')
+            check_failed = (check_result.get('status') == 'Fail')
+
+            assessment_table.put_item(Item={
+                'meeting_id': meeting_id,
+                'assessment_id': f"case-check#{check_id}",
+                'assessment_type': 'case-check',
+                'ai_version': case_data.get('prompt_version', PROMPT_VERSION),
+                'model_name': case_data.get('model_version', MODEL_VERSION),
+
+                # AI Output
+                'ai_output': json.dumps({
+                    'status': check_result.get('status'),
+                    'evidence_quote': check_result.get('evidence_quote', ''),
+                    'evidence_spans': check_result.get('evidence_spans', []),
+                    'comment': check_result.get('comment', ''),
+                    'confidence': float(check_result.get('confidence', 0.0))
+                }),
+
+                # Review status
+                'review_status': 'pending',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+
+                # Links
+                'transcript_s3_key': transcript_key,
+
+                # Case-check specific fields
+                'check_id': check_id,
+                'result': check_result.get('status'),
+                'evidence': check_result.get('evidence_quote', ''),
+                'confidence': Decimal(str(check_result.get('confidence', 0.0))),
+
+                # Vulnerability trigger flag
+                'has_detailed_assessment': (is_vulnerability_check and check_failed),
+
+                # Session metadata
+                'session_type': case_data.get('session_type', 'starter_session'),
+
+                # TTL
+                'expires_at': expires_at
+            })
+
+            helper.log_json("INFO", "CASE_CHECK_ASSESSMENT_SAVED",
+                          meetingId=meeting_id,
+                          checkId=check_id,
+                          status=check_result.get('status'))
+
+    except Exception as e:
+        # Log error but don't fail the Lambda (S3 save is primary)
+        helper.log_json("ERROR", "ASSESSMENT_TABLE_UPDATE_FAILED",
+                       meetingId=meeting_id,
+                       error=str(e))
 
 
 @lambda_error_handler()
@@ -483,6 +558,9 @@ def lambda_handler(event, context):
 
     # Save to S3
     key = _save_case_json(meeting_id, data)
+
+    # Save to assessment-results DynamoDB table (for coach review & training data)
+    _save_checks_to_assessment_table(meeting_id, data, transcript_key)
 
     # Calculate pass rate
     pass_rate = float(data.get("overall", {}).get("pass_rate", 0.0))
