@@ -435,6 +435,126 @@
             font-size: 1.1em;
         }
 
+        /* Transcript Modal */
+        .transcript-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .transcript-modal.active {
+            display: flex;
+        }
+
+        .transcript-modal-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 900px;
+            width: 100%;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .transcript-modal-header {
+            padding: 25px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .transcript-modal-header h2 {
+            font-size: 1.5em;
+            color: #2d3748;
+            margin: 0;
+        }
+
+        .transcript-modal-close {
+            background: none;
+            border: none;
+            font-size: 2em;
+            color: #718096;
+            cursor: pointer;
+            padding: 0;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .transcript-modal-close:hover {
+            background: #f7fafc;
+            color: #2d3748;
+        }
+
+        .transcript-modal-body {
+            padding: 25px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .transcript-loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+
+        .transcript-loading::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+
+        .transcript-content {
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 0.95em;
+            line-height: 1.8;
+            color: #2d3748;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background: #f7fafc;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .transcript-error {
+            background: #fff5f5;
+            color: #c53030;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #feb2b2;
+        }
+
+        .transcript-badge {
+            display: inline-block;
+            background: #fbd38d;
+            color: #744210;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             h1 {
@@ -460,6 +580,14 @@
 
             .system-column:last-child {
                 border-bottom: none;
+            }
+
+            .transcript-modal-content {
+                max-height: 95vh;
+            }
+
+            .transcript-modal-header h2 {
+                font-size: 1.2em;
             }
         }
     </style>
@@ -863,8 +991,57 @@
         }
 
         async function loadTranscript(meetingId) {
-            alert(`Loading transcript for ${meetingId}...\n\nThis will fetch from: ${API_ENDPOINT}/transcript/${meetingId}`);
+            // Open modal
+            const modal = document.getElementById('transcriptModal');
+            const modalBody = document.getElementById('transcriptModalBody');
+            const meetingIdSpan = document.getElementById('transcriptMeetingId');
+
+            meetingIdSpan.textContent = `Meeting: ${meetingId}`;
+            modalBody.innerHTML = '<div class="transcript-loading">Loading transcript</div>';
+            modal.classList.add('active');
+
+            try {
+                // Fetch transcript from API
+                const response = await fetch(`${API_ENDPOINT}/transcript/${meetingId}`);
+
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        throw new Error('Transcript not found for this meeting');
+                    }
+                    throw new Error(`Failed to load transcript (${response.status})`);
+                }
+
+                const data = await response.json();
+
+                // Display transcript
+                modalBody.innerHTML = `<div class="transcript-content">${data.transcript}</div>`;
+
+            } catch (error) {
+                console.error('Error loading transcript:', error);
+                modalBody.innerHTML = `
+                    <div class="transcript-error">
+                        <strong>Error:</strong> ${error.message}
+                        <br><br>
+                        Please ensure the meeting has been processed and the transcript is available.
+                    </div>
+                `;
+            }
         }
+
+        function closeTranscriptModal(event) {
+            // Close if clicking outside the modal content or on close button
+            if (!event || event.target.id === 'transcriptModal' || event.type === 'click') {
+                const modal = document.getElementById('transcriptModal');
+                modal.classList.remove('active');
+            }
+        }
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                closeTranscriptModal();
+            }
+        });
 
         async function saveReviewToDynamoDB(review) {
             try {
@@ -909,5 +1086,21 @@
         // Initialize on page load
         window.addEventListener('load', init);
     </script>
+
+    <!-- Transcript Modal -->
+    <div id="transcriptModal" class="transcript-modal" onclick="closeTranscriptModal(event)">
+        <div class="transcript-modal-content" onclick="event.stopPropagation()">
+            <div class="transcript-modal-header">
+                <h2>
+                    <span id="transcriptMeetingId"></span>
+                    <span class="transcript-badge">PII REDACTED</span>
+                </h2>
+                <button class="transcript-modal-close" onclick="closeTranscriptModal()">&times;</button>
+            </div>
+            <div class="transcript-modal-body" id="transcriptModalBody">
+                <div class="transcript-loading">Loading transcript</div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

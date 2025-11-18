@@ -680,6 +680,32 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref AssessmentResultsTable
 
+  ### GET /transcript/{meetingId} - Retrieve redacted transcript for a meeting ###
+  GetTranscriptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: summariser/
+      Runtime: python3.11
+      Layers:
+        - !Ref SharedDependenciesLayer
+      Handler: get_transcript.app.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Events:
+        GetApi:
+          Type: Api
+          Properties:
+            Path: /transcript/{meetingId}
+            Method: get
+        OptionsApi:
+          Type: Api
+          Properties:
+            Path: /transcript/{meetingId}
+            Method: options
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SummaryBucket
+
   ### A2I Review Poller (flip IN_REVIEW -> COMPLETED)
   ReviewPollerFunction:
     Type: AWS::Serverless::Function

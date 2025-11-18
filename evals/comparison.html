@@ -139,7 +139,7 @@
 
         .system-column {
             display: table-cell;
-            width: 33.33%;
+            width: 25%;
             padding: 30px;
             vertical-align: top;
             border-right: 2px solid #e2e8f0;
@@ -293,7 +293,7 @@
     <div class="container">
         <header>
             <h1>🎯 FCA Vulnerability Assessment Comparison</h1>
-            <p class="subtitle">Third-Party (Aveni) vs AI Model (Claude 3.7 Sonnet)</p>
+            <p class="subtitle">Third-Party (Aveni) vs Claude 3.7 Sonnet vs GPT-4o</p>
         </header>
 
         <!-- Performance Dashboard -->
@@ -473,7 +473,7 @@
                                 <!-- AI Model (Claude 3.7) Column -->
                                 <div class="system-column your-model">
                                     <div class="system-header">
-                                        <div class="system-title">🤖 AI Model (Claude 3.7)</div>
+                                        <div class="system-title">🤖 Claude 3.7 Sonnet</div>
                                         <div class="match-icon">${agreement.icon}</div>
                                     </div>
                                     ${aiResponse ? `
@@ -481,7 +481,7 @@
 
                                         ${aiResponse.reasoning ? `
                                             <div class="summary-section">
-                                                <h4>Summary:</h4>
+                                                <h4>Reasoning:</h4>
                                                 <div class="summary-text">${aiResponse.reasoning}</div>
                                             </div>
                                         ` : ''}
@@ -496,6 +496,33 @@
                                             `;
                                         }).join('')}
                                     ` : '<div class="summary-section"><h4>No AI assessment available</h4></div>'}
+                                </div>
+
+                                <!-- GPT-4o Column -->
+                                <div class="system-column gpt4">
+                                    <div class="system-header">
+                                        <div class="system-title">🤖 GPT-4o</div>
+                                    </div>
+                                    ${assessment.ai_responses?.['gpt-4o'] ? `
+                                        <div class="rating-badge" style="background: ${getRatingColor(assessment.ai_responses['gpt-4o'].rating)};">${assessment.ai_responses['gpt-4o'].rating}</div>
+
+                                        ${assessment.ai_responses['gpt-4o'].reasoning ? `
+                                            <div class="summary-section">
+                                                <h4>Reasoning:</h4>
+                                                <div class="summary-text">${assessment.ai_responses['gpt-4o'].reasoning}</div>
+                                            </div>
+                                        ` : ''}
+
+                                        ${(assessment.ai_responses['gpt-4o'].vulnerability_types || []).map((type, idx) => {
+                                            const evidence = assessment.ai_responses['gpt-4o'].evidence?.[idx] || '';
+                                            return `
+                                                <div class="vulnerability-item">
+                                                    <div class="vulnerability-type">${type}</div>
+                                                    ${evidence ? `<div class="evidence-quote">${evidence}</div>` : ''}
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    ` : '<div class="summary-section"><h4>No GPT-4o assessment available</h4></div>'}
                                 </div>
                             </div>
                         </div>
