@@ -193,6 +193,14 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        - IndexName: ReviewStatusTypeIndex
+          KeySchema:
+            - AttributeName: review_status
+              KeyType: HASH
+            - AttributeName: assessment_type
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
         - IndexName: CoachIndex
           KeySchema:
             - AttributeName: reviewed_by

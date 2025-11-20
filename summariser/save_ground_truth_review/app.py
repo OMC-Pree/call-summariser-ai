@@ -53,7 +53,7 @@ def lambda_handler(event, context):
         body = json.loads(event.get('body', '{}'))
 
         # Validate required fields
-        required_fields = ['action', 'meeting_id', 'third_party_rating',
+        required_fields = ['action', 'meeting_id', 'assessment_id', 'third_party_rating',
                           'third_party_types', 'coach_email', 'timestamp']
         for field in required_fields:
             if field not in body:
@@ -90,7 +90,7 @@ def lambda_handler(event, context):
         assessments_table.update_item(
             Key={
                 'meeting_id': body['meeting_id'],
-                'assessment_id': 'third-party'
+                'assessment_id': body['assessment_id']  # Use actual assessment_id from request
             },
             UpdateExpression=update_expression,
             ExpressionAttributeValues=expression_values
