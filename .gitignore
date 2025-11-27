@@ -272,3 +272,8 @@ evals/eval_output/
 eval_output/
 
 # End of https://www.gitignore.io/api/osx,linux,python,windows,pycharm,visualstudiocode
+
+# Golden dataset files (local only, uploaded to DynamoDB/S3)
+golden_dataset_results/
+scripts/collect_golden_dataset_api.py
+scripts/upload_golden_dataset.py
